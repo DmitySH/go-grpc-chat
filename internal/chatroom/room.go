@@ -2,20 +2,22 @@ package chatroom
 
 import (
 	"github.com/DmitySH/go-grpc-chat/api/chat"
+	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"log"
 	"sync"
 )
 
 type Room struct {
 	mu           sync.RWMutex
-	currentID    int64
-	users        map[int64]User
+	users        map[uuid.UUID]User
 	messageQueue chan Message
 }
 
 func NewRoom() *Room {
 	return &Room{
-		users:        make(map[int64]User),
+		users:        make(map[uuid.UUID]User),
 		messageQueue: make(chan Message),
 	}
 }
@@ -23,8 +25,13 @@ func NewRoom() *Room {
 func (r *Room) AddUser(user User) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.users[r.currentID] = user
-	r.currentID++
+	r.users[user.ID] = user
+}
+
+func (r *Room) DeleteUser(user User) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.users, user.ID)
 }
 
 func (r *Room) PushMessage(message Message) {
@@ -37,17 +44,34 @@ func (r *Room) PushMessage(message Message) {
 func (r *Room) StartDeliveringMessages() {
 	go func() {
 		for msg := range r.messageQueue {
-			r.mu.RLock()
-			for _, user := range r.users {
-				err := user.OutputStream.Send(&chat.MessageResponse{
-					Username: msg.From,
-					Content:  msg.Content + "\n",
-				})
-				if err != nil {
-					log.Println("can't send message to:", err)
-				}
-			}
-			r.mu.RUnlock()
+			r.handleMessage(msg)
 		}
 	}()
+}
+
+func (r *Room) handleMessage(msg Message) {
+	var usersToDelete []User
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for _, user := range r.users {
+		err := user.OutputStream.Send(&chat.MessageResponse{
+			Username: msg.From,
+			Content:  msg.Content + "\n",
+		})
+
+		if err != nil {
+			log.Printf("can't send message to %s: %v", user.Name, err)
+			if s, ok := status.FromError(err); ok {
+				if s.Code() == codes.Unavailable {
+					usersToDelete = append(usersToDelete, user)
+				}
+			}
+		}
+	}
+
+	for _, user := range usersToDelete {
+		delete(r.users, user.ID)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
 	"io"
 	"log"
@@ -41,30 +42,31 @@ func (s *ChatServer) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	}
 	room := s.rooms[roomName]
 
-	room.AddUser(chatroom.User{
+	user := chatroom.User{
+		ID:           uuid.New(),
 		Name:         username,
 		OutputStream: msgStream,
-	})
+	}
+	room.AddUser(user)
 
 	for {
 		in, err := msgStream.Recv()
 		if err == io.EOF {
+			room.DeleteUser(user)
+			log.Println("user", username, "disconnected")
 			return nil
 		}
 
 		if err != nil {
 			return err
 		}
+
 		room.PushMessage(chatroom.Message{
 			Content: in.Content,
 			From:    username,
 		})
 		log.Printf("room %s: %s said %s", roomName, username, in.Content)
 	}
-
-	log.Println("user", username, "disconnected")
-
-	return nil
 }
 
 func usernameAndRoomInMetadata(md metadata.MD) error {
