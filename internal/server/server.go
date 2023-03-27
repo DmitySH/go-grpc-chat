@@ -3,20 +3,25 @@ package server
 import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
+	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
 	"google.golang.org/grpc/metadata"
+	"io"
 	"log"
 )
 
 type ChatServer struct {
 	chat.UnimplementedChatServer
+	rooms map[string]*chatroom.Room
 }
 
 func NewChatServer() *ChatServer {
-	return &ChatServer{}
+	return &ChatServer{
+		rooms: make(map[string]*chatroom.Room),
+	}
 }
 
-func (s *ChatServer) DoChatting(inMsgStream chat.Chat_DoChattingServer) error {
-	md, ok := metadata.FromIncomingContext(inMsgStream.Context())
+func (s *ChatServer) DoChatting(msgStream chat.Chat_DoChattingServer) error {
+	md, ok := metadata.FromIncomingContext(msgStream.Context())
 	if !ok {
 		return fmt.Errorf("no metadata in request")
 	}
@@ -26,9 +31,38 @@ func (s *ChatServer) DoChatting(inMsgStream chat.Chat_DoChattingServer) error {
 	}
 
 	username := md.Get("username")[0]
-	room := md.Get("room")[0]
+	roomName := md.Get("room")[0]
 
-	log.Println("user", username, "connected to room", room)
+	log.Println("user", username, "connected to room", roomName)
+
+	if _, ok = s.rooms[roomName]; !ok {
+		s.rooms[roomName] = chatroom.NewRoom()
+		s.rooms[roomName].StartDeliveringMessages()
+	}
+	room := s.rooms[roomName]
+
+	room.AddUser(chatroom.User{
+		Name:         username,
+		OutputStream: msgStream,
+	})
+
+	for {
+		in, err := msgStream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+
+		if err != nil {
+			return err
+		}
+		room.PushMessage(chatroom.Message{
+			Content: in.Content,
+			From:    username,
+		})
+		log.Printf("room %s: %s said %s", roomName, username, in.Content)
+	}
+
+	log.Println("user", username, "disconnected")
 
 	return nil
 }
