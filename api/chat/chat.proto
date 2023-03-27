@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+option go_package = "github.com/DmitySH/go-grpc-chat/api/chat";
+
+package chat;
+
+service Chat {
+  rpc DoChatting(stream MessageRequest) returns (stream MessageResponse);
+}
+
+message MessageRequest {
+  string content = 1;
+}
+
+message MessageResponse {
+  string username = 1;
+  string content = 2;
+}
+
+
