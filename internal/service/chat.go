@@ -12,7 +12,6 @@ import (
 	"io"
 	"log"
 	"sync"
-	"time"
 )
 
 var ErrUserStoppedChatting = errors.New("user stopped chatting")
@@ -29,7 +28,6 @@ func NewChatService() *ChatService {
 		rooms:  make(map[string]*chatroom.Room),
 		stopCh: make(chan struct{}, 1),
 	}
-	service.checkEmptyRooms()
 
 	return service
 }
@@ -44,8 +42,6 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	username := md.Get("username")[0]
 	roomName := md.Get("room")[0]
 
-	log.Println("user", username, "connected to room", roomName)
-
 	user := entity.User{
 		ID:            uuid.New(),
 		Name:          username,
@@ -54,9 +50,15 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 
 	room := s.getOrCreateRoom(roomName)
 	room.AddUser(user)
+	log.Println("user", username, "connected to room", roomName)
+
 	defer func() {
 		room.DeleteUser(user)
 		log.Println("user", user.Name, "disconnected")
+
+		if ok := s.deleteEmptyRoom(room); ok {
+			log.Println("room", room.Name, "deleted")
+		}
 	}()
 
 	for {
@@ -73,12 +75,15 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 
 func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, ok := s.rooms[roomName]; !ok {
 		s.rooms[roomName] = chatroom.NewRoom(roomName)
 		s.rooms[roomName].StartDeliveringMessages()
+
+		log.Println("room", roomName, "created")
 	}
 	room := s.rooms[roomName]
-	s.mu.Unlock()
 
 	return room
 }
@@ -103,35 +108,15 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 	return nil
 }
 
-func (s *ChatService) Stop() {
-	s.stopCh <- struct{}{}
-}
-
-func (s *ChatService) checkEmptyRooms() {
-	ticker := time.Tick(time.Minute * 10)
-
-	go func() {
-		for {
-			select {
-			case <-ticker:
-				s.deleteEmptyRooms()
-			case <-s.stopCh:
-				s.deleteEmptyRooms()
-				return
-			}
-		}
-	}()
-}
-
-func (s *ChatService) deleteEmptyRooms() {
+func (s *ChatService) deleteEmptyRoom(room *chatroom.Room) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for roomName, room := range s.rooms {
-		if ok := room.CloseIfEmpty(); ok {
-			delete(s.rooms, roomName)
-			log.Printf("room %s closed", roomName)
-		}
+	if ok := room.CloseIfEmpty(); ok {
+		delete(s.rooms, room.Name)
+		return true
 	}
+
+	return false
 }
 
 func checkMetadata(ctx context.Context) (metadata.MD, error) {

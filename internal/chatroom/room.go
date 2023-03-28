@@ -49,7 +49,6 @@ func (r *Room) StartDeliveringMessages() {
 		for msg := range r.messageQueue {
 			r.handleMessage(msg)
 		}
-		log.Println("room stopped")
 	}()
 }
 

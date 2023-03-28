@@ -41,7 +41,7 @@ func main() {
 	grpcServer := grpc.NewServer(opts...)
 
 	chatService := service.NewChatService()
-	defer chatService.Stop()
+
 	chat.RegisterChatServer(grpcServer, chatService)
 
 	log.Printf("starting server on %s:%d\n", serverCfg.host, serverCfg.port)
