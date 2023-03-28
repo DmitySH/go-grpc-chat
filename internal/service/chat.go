@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
@@ -31,13 +32,10 @@ func NewChatService() *ChatService {
 }
 
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
-	md, ok := metadata.FromIncomingContext(msgStream.Context())
-	if !ok {
-		return fmt.Errorf("no metadata in request")
-	}
+	md, mdErr := checkMetadata(msgStream.Context())
 
-	if err := usernameAndRoomInMetadata(md); err != nil {
-		return err
+	if mdErr != nil {
+		return fmt.Errorf("incorrect metadata: %w", mdErr)
 	}
 
 	username := md.Get("username")[0]
@@ -46,7 +44,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	log.Println("user", username, "connected to room", roomName)
 
 	s.mu.Lock()
-	if _, ok = s.rooms[roomName]; !ok {
+	if _, ok := s.rooms[roomName]; !ok {
 		s.rooms[roomName] = chatroom.NewRoom()
 		s.rooms[roomName].StartDeliveringMessages()
 	}
@@ -113,13 +111,17 @@ func (s *ChatService) deleteEmptyRooms() {
 	}
 }
 
-func usernameAndRoomInMetadata(md metadata.MD) error {
+func checkMetadata(ctx context.Context) (metadata.MD, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("no metadata in request")
+	}
 	if len(md.Get("username")) == 0 {
-		return fmt.Errorf("no username in metadata")
+		return nil, fmt.Errorf("no username in metadata")
 	}
 	if len(md.Get("room")) == 0 {
-		return fmt.Errorf("no room in metadata")
+		return nil, fmt.Errorf("no room in metadata")
 	}
 
-	return nil
+	return md, nil
 }

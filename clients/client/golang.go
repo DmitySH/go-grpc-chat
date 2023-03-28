@@ -48,6 +48,12 @@ func (c *ChatClient) DoChatting() error {
 
 	log.Println(c.metadata.Get("username")[0], "connected to room", c.metadata.Get("room")[0])
 
+	defer func() {
+		if closeSendErr := msgStream.CloseSend(); closeSendErr != nil {
+			log.Println("can't close send: %w", closeSendErr)
+		}
+	}()
+
 	readErrCh := make(chan error)
 	writeErrCh := make(chan error)
 
@@ -61,10 +67,6 @@ func (c *ChatClient) DoChatting() error {
 		}
 	case err := <-readErrCh:
 		return fmt.Errorf("can't read from chat: %w", err)
-	}
-
-	if closeSendErr := msgStream.CloseSend(); closeSendErr != nil {
-		return fmt.Errorf("can't close send: %w", closeSendErr)
 	}
 
 	return nil
