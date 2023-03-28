@@ -110,7 +110,13 @@ func (c *ChatClient) readMessages(inMsgStream chat.Chat_DoChattingClient, errCh 
 func (c *ChatClient) writeMessages(outMsgStream chat.Chat_DoChattingClient, errCh chan<- error) {
 	for {
 		var msg string
-		_, _ = fmt.Scanln(&msg)
+		_, inputReadErr := fmt.Scanln(&msg)
+		if inputReadErr != nil {
+			return
+		}
+		if inputReadErr != nil {
+			errCh <- fmt.Errorf("can't read user input: %w", inputReadErr)
+		}
 
 		if msg == "stop" {
 			errCh <- ErrUserStopChatting

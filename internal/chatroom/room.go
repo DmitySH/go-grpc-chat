@@ -46,12 +46,23 @@ func (r *Room) StartDeliveringMessages() {
 		for msg := range r.messageQueue {
 			r.handleMessage(msg)
 		}
+		log.Println("room stopped")
 	}()
 }
 
-func (r *Room) handleMessage(msg Message) {
-	var usersToDelete []User
+func (r *Room) CloseIfEmpty() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
+	if len(r.users) == 0 {
+		close(r.messageQueue)
+		return true
+	}
+
+	return false
+}
+
+func (r *Room) handleMessage(msg Message) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -65,13 +76,9 @@ func (r *Room) handleMessage(msg Message) {
 			log.Printf("can't send message to %s: %v", user.Name, err)
 			if s, ok := status.FromError(err); ok {
 				if s.Code() == codes.Unavailable {
-					usersToDelete = append(usersToDelete, user)
+					delete(r.users, user.ID)
 				}
 			}
 		}
-	}
-
-	for _, user := range usersToDelete {
-		delete(r.users, user.ID)
 	}
 }

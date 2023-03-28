@@ -4,3 +4,10 @@ gen-proto:
         --go-grpc_out=. --go-grpc_opt=paths=source_relative \
         api/chat/chat.proto
 
+.PHONY: run
+run:
+	go run cmd/chat/main.go
+
+.PHONY: run-client
+run-client:
+	go run clients/cmd/main.go

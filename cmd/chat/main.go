@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
-	"github.com/DmitySH/go-grpc-chat/internal/server"
+	"github.com/DmitySH/go-grpc-chat/internal/service"
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -40,7 +40,10 @@ func main() {
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 
-	chat.RegisterChatServer(grpcServer, server.NewChatServer())
+	chatService := service.NewChatService()
+	defer chatService.Stop()
+	chat.RegisterChatServer(grpcServer, chatService)
+
 	log.Printf("starting server on %s:%d\n", serverCfg.host, serverCfg.port)
 
 	stopChan := make(chan os.Signal, 2)
