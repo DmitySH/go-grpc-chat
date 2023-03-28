@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
+	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/metadata"
 	"io"
@@ -52,7 +53,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	room := s.rooms[roomName]
 	s.mu.Unlock()
 
-	user := chatroom.User{
+	user := entity.User{
 		ID:           uuid.New(),
 		Name:         username,
 		OutputStream: msgStream,
@@ -73,7 +74,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 			return err
 		}
 
-		room.PushMessage(chatroom.Message{
+		room.PushMessage(entity.Message{
 			Content: in.Content,
 			From:    username,
 		})

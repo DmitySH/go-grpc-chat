@@ -1,4 +1,4 @@
-package chatroom
+package entity
 
 import (
 	"github.com/DmitySH/go-grpc-chat/api/chat"
