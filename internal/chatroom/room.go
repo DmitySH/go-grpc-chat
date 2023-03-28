@@ -11,13 +11,15 @@ import (
 )
 
 type Room struct {
+	Name         string
 	mu           sync.RWMutex
 	users        map[uuid.UUID]entity.User
 	messageQueue chan entity.Message
 }
 
-func NewRoom() *Room {
+func NewRoom(name string) *Room {
 	return &Room{
+		Name:         name,
 		users:        make(map[uuid.UUID]entity.User),
 		messageQueue: make(chan entity.Message),
 	}
@@ -68,7 +70,7 @@ func (r *Room) handleMessage(msg entity.Message) {
 	defer r.mu.RUnlock()
 
 	for _, user := range r.users {
-		err := user.OutputStream.Send(&chat.MessageResponse{
+		err := user.MessageStream.Send(&chat.MessageResponse{
 			Username: msg.From,
 			Content:  msg.Content + "\n",
 		})

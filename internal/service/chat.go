@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 )
+
+var ErrUserStoppedChatting = errors.New("user stopped chatting")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
@@ -43,41 +46,61 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 
 	log.Println("user", username, "connected to room", roomName)
 
+	user := entity.User{
+		ID:            uuid.New(),
+		Name:          username,
+		MessageStream: msgStream,
+	}
+
+	room := s.getOrCreateRoom(roomName)
+	room.AddUser(user)
+	defer func() {
+		room.DeleteUser(user)
+		log.Println("user", user.Name, "disconnected")
+	}()
+
+	for {
+		err := s.handleInputMessage(user, room)
+		if errors.Is(err, ErrUserStoppedChatting) {
+			return nil
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	s.mu.Lock()
 	if _, ok := s.rooms[roomName]; !ok {
-		s.rooms[roomName] = chatroom.NewRoom()
+		s.rooms[roomName] = chatroom.NewRoom(roomName)
 		s.rooms[roomName].StartDeliveringMessages()
 	}
 	room := s.rooms[roomName]
 	s.mu.Unlock()
 
-	user := entity.User{
-		ID:           uuid.New(),
-		Name:         username,
-		OutputStream: msgStream,
+	return room
+}
+
+func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) error {
+	in, err := user.MessageStream.Recv()
+
+	if err == io.EOF {
+		return ErrUserStoppedChatting
 	}
-	room.AddUser(user)
 
-	for {
-		in, err := msgStream.Recv()
-		if err == io.EOF {
-			room.DeleteUser(user)
-
-			log.Println("user", username, "disconnected")
-			return nil
-		}
-
-		if err != nil {
-			log.Println("error during chatting:", err)
-			return err
-		}
-
-		room.PushMessage(entity.Message{
-			Content: in.Content,
-			From:    username,
-		})
-		log.Printf("room %s: %s said %s", roomName, username, in.Content)
+	if err != nil {
+		return fmt.Errorf("can't receive message: %w", err)
 	}
+
+	room.PushMessage(entity.Message{
+		Content: in.Content,
+		From:    user.Name,
+	})
+	log.Printf("room %s: %s said %s", room.Name, user.Name, in.Content)
+
+	return nil
 }
 
 func (s *ChatService) Stop() {

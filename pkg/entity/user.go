@@ -6,7 +6,7 @@ import (
 )
 
 type User struct {
-	ID           uuid.UUID
-	Name         string
-	OutputStream chat.Chat_DoChattingServer
+	ID            uuid.UUID
+	Name          string
+	MessageStream chat.Chat_DoChattingServer
 }

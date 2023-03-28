@@ -51,7 +51,7 @@ func main() {
 	go func() {
 		<-stopChan
 		log.Println("shutting down server")
-		grpcServer.GracefulStop()
+		grpcServer.Stop()
 	}()
 
 	if serveErr := grpcServer.Serve(listener); serveErr != nil {
