@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"io"
 	"log"
 )
 
-var ErrUserStopChatting = errors.New("user stopped chatting")
+var (
+	ErrUserStopChatting   = errors.New("user stopped chatting")
+	ErrServerDisconnected = errors.New("server disconnected")
+)
 
 type Config struct {
 	ServerHost string
@@ -84,28 +89,34 @@ func (c *ChatClient) readAndWriteMessagesFromStream(msgStream chat.Chat_DoChatti
 	go c.writeMessages(msgStream, writeErrCh)
 
 	select {
+	case err := <-readErrCh:
+		return fmt.Errorf("can't read from chat: %w", err)
 	case err := <-writeErrCh:
 		if !errors.Is(err, ErrUserStopChatting) {
 			return fmt.Errorf("can't write to chat: %w", err)
 		}
-	case err := <-readErrCh:
-		return fmt.Errorf("can't read from chat: %w", err)
 	}
 
 	return nil
 }
 
 func (c *ChatClient) readMessages(inMsgStream chat.Chat_DoChattingClient, errCh chan<- error) {
+	defer close(errCh)
+
 	for {
 		msg, err := inMsgStream.Recv()
 		if err == io.EOF {
-			close(errCh)
+			errCh <- ErrServerDisconnected
+			return
+		}
+
+		if st, ok := status.FromError(err); ok && st.Code() != codes.OK {
+			errCh <- err
 			return
 		}
 
 		if err != nil {
 			errCh <- fmt.Errorf("can't read message: %w", err)
-			close(errCh)
 			return
 		}
 
@@ -114,26 +125,25 @@ func (c *ChatClient) readMessages(inMsgStream chat.Chat_DoChattingClient, errCh 
 }
 
 func (c *ChatClient) writeMessages(outMsgStream chat.Chat_DoChattingClient, errCh chan<- error) {
+	defer close(errCh)
+
 	for {
 		var msg string
 		_, inputReadErr := fmt.Scanln(&msg)
-		if inputReadErr != nil {
+
+		if inputReadErr == io.EOF {
+			errCh <- ErrUserStopChatting
 			return
 		}
+
 		if inputReadErr != nil {
 			errCh <- fmt.Errorf("can't read user input: %w", inputReadErr)
-		}
-
-		if msg == "stop" {
-			errCh <- ErrUserStopChatting
-			close(errCh)
 			return
 		}
 
 		req := &chat.MessageRequest{Content: msg}
 		if err := outMsgStream.Send(req); err != nil {
 			errCh <- fmt.Errorf("failed to send message: %w", err)
-			close(errCh)
 			return
 		}
 	}

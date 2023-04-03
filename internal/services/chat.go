@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-var ErrUserStoppedChatting = errors.New("user stopped chatting")
+var ErrUserDisconnected = errors.New("user stopped chatting")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
@@ -32,13 +32,13 @@ func NewChatService() *ChatService {
 	return service
 }
 
-// TODO: graceful method, incorrect metadata error handle
+// TODO: graceful method
 
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	md, mdErr := checkMetadata(msgStream.Context())
 
 	if mdErr != nil {
-		return fmt.Errorf("incorrect metadata: %w", mdErr)
+		return mdErr
 	}
 
 	username := md.Get("username")[0]
@@ -61,7 +61,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 
 	for {
 		err := s.handleInputMessage(user, room)
-		if errors.Is(err, ErrUserStoppedChatting) {
+		if errors.Is(err, ErrUserDisconnected) {
 			return nil
 		}
 
@@ -122,13 +122,11 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 	in, err := user.MessageStream.Recv()
 
 	if err == io.EOF {
-		return ErrUserStoppedChatting
+		return ErrUserDisconnected
 	}
 
-	if st, ok := status.FromError(err); ok {
-		if st.Code() == codes.Canceled {
-			return ErrUserStoppedChatting
-		}
+	if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+		return ErrUserDisconnected
 	}
 
 	if err != nil {
@@ -147,13 +145,13 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 func checkMetadata(ctx context.Context) (metadata.MD, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return nil, fmt.Errorf("no metadata in request")
+		return nil, status.Error(codes.PermissionDenied, "no metadata")
 	}
 	if len(md.Get("username")) == 0 {
-		return nil, fmt.Errorf("no username in metadata")
+		return nil, status.Error(codes.PermissionDenied, "no username in metadata")
 	}
 	if len(md.Get("room")) == 0 {
-		return nil, fmt.Errorf("no room in metadata")
+		return nil, status.Error(codes.PermissionDenied, "no room in metadata")
 	}
 
 	return md, nil
