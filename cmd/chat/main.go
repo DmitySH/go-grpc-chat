@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
-	"github.com/DmitySH/go-grpc-chat/internal/service"
+	"github.com/DmitySH/go-grpc-chat/internal/services"
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -22,7 +22,7 @@ type serverConfig struct {
 }
 
 func main() {
-	config.MustLoadConfig(cfgPath)
+	config.MustLoadEnvConfig(cfgPath)
 	serverCfg := serverConfig{
 		host: viper.GetString("SERVER_HOST"),
 		port: viper.GetInt("SERVER_PORT"),
@@ -40,7 +40,7 @@ func main() {
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 
-	chatService := service.NewChatService()
+	chatService := services.NewChatService()
 
 	chat.RegisterChatServer(grpcServer, chatService)
 

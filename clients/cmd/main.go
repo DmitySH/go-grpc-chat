@@ -12,7 +12,7 @@ import (
 const cfgPath = "configs/app.env"
 
 func main() {
-	config.MustLoadConfig(cfgPath)
+	config.MustLoadEnvConfig(cfgPath)
 
 	clientCfg := client.Config{
 		ServerHost: viper.GetString("SERVER_HOST"),

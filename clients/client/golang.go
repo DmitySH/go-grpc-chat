@@ -41,35 +41,20 @@ func (c *ChatClient) DoChatting() error {
 	grpcClient := chat.NewChatClient(conn)
 	ctx := metadata.NewOutgoingContext(context.Background(), c.metadata)
 
-	msgStream, startChattingErr := grpcClient.DoChatting(ctx)
-	if startChattingErr != nil {
-		return fmt.Errorf("failed connect to chat: %w", startChattingErr)
+	msgStream, startChatErr := grpcClient.DoChatting(ctx)
+	if startChatErr != nil {
+		return fmt.Errorf("failed connect to chat: %w", startChatErr)
 	}
 
 	log.Println(c.metadata.Get("username")[0], "connected to room", c.metadata.Get("room")[0])
 
 	defer func() {
 		if closeSendErr := msgStream.CloseSend(); closeSendErr != nil {
-			log.Println("can't close send: %w", closeSendErr)
+			log.Println("can't close send: ", closeSendErr)
 		}
 	}()
 
-	readErrCh := make(chan error)
-	writeErrCh := make(chan error)
-
-	go c.readMessages(msgStream, readErrCh)
-	go c.writeMessages(msgStream, writeErrCh)
-
-	select {
-	case err := <-writeErrCh:
-		if !errors.Is(err, ErrUserStopChatting) {
-			return fmt.Errorf("can't write to chat: %w", err)
-		}
-	case err := <-readErrCh:
-		return fmt.Errorf("can't read from chat: %w", err)
-	}
-
-	return nil
+	return c.readAndWriteMessagesFromStream(msgStream)
 }
 
 func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
@@ -89,6 +74,25 @@ func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
 	}
 
 	return conn, nil
+}
+
+func (c *ChatClient) readAndWriteMessagesFromStream(msgStream chat.Chat_DoChattingClient) error {
+	readErrCh := make(chan error)
+	writeErrCh := make(chan error)
+
+	go c.readMessages(msgStream, readErrCh)
+	go c.writeMessages(msgStream, writeErrCh)
+
+	select {
+	case err := <-writeErrCh:
+		if !errors.Is(err, ErrUserStopChatting) {
+			return fmt.Errorf("can't write to chat: %w", err)
+		}
+	case err := <-readErrCh:
+		return fmt.Errorf("can't read from chat: %w", err)
+	}
+
+	return nil
 }
 
 func (c *ChatClient) readMessages(inMsgStream chat.Chat_DoChattingClient, errCh chan<- error) {

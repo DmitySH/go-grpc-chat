@@ -5,11 +5,11 @@ import (
 	"log"
 )
 
-func MustLoadConfig(cfgPath string) {
+func MustLoadEnvConfig(cfgPath string) {
 	viper.SetConfigFile(cfgPath)
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
-		log.Fatal("can't load config:", err)
+		log.Fatal("can't load env config:", err)
 	}
 }

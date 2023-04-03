@@ -1,4 +1,4 @@
-package service
+package services
 
 import (
 	"context"
@@ -8,7 +8,9 @@ import (
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
 	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"io"
 	"log"
 	"sync"
@@ -18,19 +20,19 @@ var ErrUserStoppedChatting = errors.New("user stopped chatting")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
-	rooms  map[string]*chatroom.Room
-	stopCh chan struct{}
-	mu     sync.RWMutex
+	rooms   map[string]*chatroom.Room
+	roomsMu sync.Mutex
 }
 
 func NewChatService() *ChatService {
 	service := &ChatService{
-		rooms:  make(map[string]*chatroom.Room),
-		stopCh: make(chan struct{}, 1),
+		rooms: make(map[string]*chatroom.Room),
 	}
 
 	return service
 }
+
+// TODO: graceful method, incorrect metadata error handle
 
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	md, mdErr := checkMetadata(msgStream.Context())
@@ -48,18 +50,14 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		MessageStream: msgStream,
 	}
 
-	room := s.getOrCreateRoom(roomName)
-	room.AddUser(user)
+	room, addUserErr := s.addUserToRoom(roomName, user)
+	if addUserErr != nil {
+		log.Printf("can't add user to room %s: %v\n", room.Name, addUserErr)
+		return fmt.Errorf("can't add user to room %s: %w", room.Name, addUserErr)
+	}
+
 	log.Println("user", username, "connected to room", roomName)
-
-	defer func() {
-		room.DeleteUser(user)
-		log.Println("user", user.Name, "disconnected")
-
-		if ok := s.deleteEmptyRoom(room); ok {
-			log.Println("room", room.Name, "deleted")
-		}
-	}()
+	defer s.disconnectUser(user, room)
 
 	for {
 		err := s.handleInputMessage(user, room)
@@ -68,15 +66,26 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		}
 
 		if err != nil {
+			log.Println(err)
 			return err
 		}
 	}
 }
 
-func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*chatroom.Room, error) {
+	s.roomsMu.Lock()
+	defer s.roomsMu.Unlock()
 
+	room := s.getOrCreateRoom(roomName)
+	err := room.AddUser(user)
+	if err != nil {
+		return nil, err
+	}
+
+	return room, nil
+}
+
+func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	if _, ok := s.rooms[roomName]; !ok {
 		s.rooms[roomName] = chatroom.NewRoom(roomName)
 		s.rooms[roomName].StartDeliveringMessages()
@@ -88,11 +97,38 @@ func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	return room
 }
 
+func (s *ChatService) disconnectUser(user entity.User, room *chatroom.Room) {
+	room.DeleteUser(user.ID)
+	log.Println("user", user.Name, "disconnected")
+
+	if ok := s.deleteRoomIfEmpty(room); ok {
+		log.Println("room", room.Name, "deleted")
+	}
+}
+
+func (s *ChatService) deleteRoomIfEmpty(room *chatroom.Room) bool {
+	s.roomsMu.Lock()
+	defer s.roomsMu.Unlock()
+
+	if ok := room.CloseIfEmpty(); ok {
+		delete(s.rooms, room.Name)
+		return true
+	}
+
+	return false
+}
+
 func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) error {
 	in, err := user.MessageStream.Recv()
 
 	if err == io.EOF {
 		return ErrUserStoppedChatting
+	}
+
+	if st, ok := status.FromError(err); ok {
+		if st.Code() == codes.Canceled {
+			return ErrUserStoppedChatting
+		}
 	}
 
 	if err != nil {
@@ -106,17 +142,6 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 	log.Printf("room %s: %s said %s", room.Name, user.Name, in.Content)
 
 	return nil
-}
-
-func (s *ChatService) deleteEmptyRoom(room *chatroom.Room) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ok := room.CloseIfEmpty(); ok {
-		delete(s.rooms, room.Name)
-		return true
-	}
-
-	return false
 }
 
 func checkMetadata(ctx context.Context) (metadata.MD, error) {
