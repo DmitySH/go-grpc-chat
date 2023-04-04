@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-var ErrUserDisconnected = errors.New("user stopped chatting")
+var ErrUserDisconnected = errors.New("user disconnected")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
@@ -31,8 +31,6 @@ func NewChatService() *ChatService {
 
 	return service
 }
-
-// TODO: graceful method
 
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	md, mdErr := checkMetadata(msgStream.Context())

@@ -22,7 +22,7 @@ type serverConfig struct {
 }
 
 func main() {
-	config.MustLoadEnvConfig(cfgPath)
+	config.LoadEnvConfig(cfgPath)
 	serverCfg := serverConfig{
 		host: viper.GetString("SERVER_HOST"),
 		port: viper.GetInt("SERVER_PORT"),
