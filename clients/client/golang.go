@@ -58,12 +58,9 @@ func (c *ChatClient) DoChatting() error {
 	if getMdErr != nil {
 		return fmt.Errorf("failed to get metadata: %w", getMdErr)
 	}
-	if len(md.Get("uuid")) == 0 {
-		return errors.New("no uuid in metadata")
-	}
-	userUUID, parseErr := uuid.Parse(md.Get("uuid")[0])
-	if parseErr != nil {
-		return fmt.Errorf("can't parse uuid from metadata: %w", parseErr)
+	userUUID, getUUIDErr := getUUIDFromMetadata(md)
+	if getUUIDErr != nil {
+		return fmt.Errorf("failed to get uuid from metadata: %w", getUUIDErr)
 	}
 
 	user := entity.User{
@@ -102,6 +99,18 @@ func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
+func getUUIDFromMetadata(md metadata.MD) (uuid.UUID, error) {
+	if len(md.Get("uuid")) == 0 {
+		return uuid.UUID{}, errors.New("no uuid in metadata")
+	}
+	userUUID, parseErr := uuid.Parse(md.Get("uuid")[0])
+	if parseErr != nil {
+		return uuid.UUID{}, fmt.Errorf("can't parse uuid from metadata: %w", parseErr)
+	}
+
+	return userUUID, nil
+}
+
 func (c *ChatClient) readAndWriteMessagesFromStream(user entity.User) error {
 	readErrCh := make(chan error)
 	writeErrCh := make(chan error)
@@ -111,14 +120,17 @@ func (c *ChatClient) readAndWriteMessagesFromStream(user entity.User) error {
 
 	select {
 	case err := <-readErrCh:
+		if errors.Is(err, ErrServerDisconnected) {
+			log.Println(err)
+			return nil
+		}
 		return fmt.Errorf("can't read from chat: %w", err)
 	case err := <-writeErrCh:
-		if !errors.Is(err, ErrUserStopChatting) {
-			return fmt.Errorf("can't write to chat: %w", err)
+		if errors.Is(err, ErrUserStopChatting) {
+			return nil
 		}
+		return fmt.Errorf("can't write to chat: %w", err)
 	}
-
-	return nil
 }
 
 func (c *ChatClient) readMessages(user entity.User, errCh chan<- error) {
@@ -127,6 +139,10 @@ func (c *ChatClient) readMessages(user entity.User, errCh chan<- error) {
 	for {
 		msg, err := user.MessageStream.Recv()
 		if err == io.EOF {
+			errCh <- ErrServerDisconnected
+			return
+		}
+		if status.Convert(err).Code() == codes.Unavailable {
 			errCh <- ErrServerDisconnected
 			return
 		}
