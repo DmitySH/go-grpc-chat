@@ -75,8 +75,9 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 
 	for _, user := range r.users {
 		err := user.MessageStream.Send(&chat.MessageResponse{
-			Username: msg.From,
+			Username: msg.FromName,
 			Content:  msg.Content + "\n",
+			FromUuid: msg.FromUUID.String(),
 		})
 
 		if err != nil {

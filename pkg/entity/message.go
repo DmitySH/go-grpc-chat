@@ -1,6 +1,9 @@
 package entity
 
+import "github.com/google/uuid"
+
 type Message struct {
-	Content string
-	From    string
+	Content  string
+	FromName string
+	FromUUID uuid.UUID
 }

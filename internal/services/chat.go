@@ -56,7 +56,18 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		return fmt.Errorf("can't add user to room %s: %w", room.Name, addUserErr)
 	}
 
+	sendMdErr := user.MessageStream.SendHeader(metadata.New(map[string]string{"uuid": user.ID.String()}))
+	if sendMdErr != nil {
+		log.Printf("can't send header metadata for user %s: %v\n", user.Name, sendMdErr)
+		return fmt.Errorf("can't add user to room %s: %w", user.Name, sendMdErr)
+	}
+
 	log.Println("user", username, "connected to room", roomName)
+	room.PushMessage(entity.Message{
+		Content:  fmt.Sprintf("user %s connected to room %s", username, roomName),
+		FromName: fmt.Sprintf("room %s", roomName),
+		FromUUID: user.ID,
+	})
 	defer s.disconnectUser(user, room)
 
 	for {
@@ -134,8 +145,9 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 	}
 
 	room.PushMessage(entity.Message{
-		Content: in.Content,
-		From:    user.Name,
+		Content:  in.Content,
+		FromName: user.Name,
+		FromUUID: user.ID,
 	})
 	log.Printf("room %s: %s said %s", room.Name, user.Name, in.Content)
 

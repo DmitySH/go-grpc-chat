@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
+	"github.com/DmitySH/go-grpc-chat/clients/entity"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -12,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 	"io"
 	"log"
+	"strings"
 )
 
 var (
@@ -51,6 +54,24 @@ func (c *ChatClient) DoChatting() error {
 		return fmt.Errorf("failed connect to chat: %w", startChatErr)
 	}
 
+	md, getMdErr := msgStream.Header()
+	if getMdErr != nil {
+		return fmt.Errorf("failed to get metadata: %w", getMdErr)
+	}
+	if len(md.Get("uuid")) == 0 {
+		return errors.New("no uuid in metadata")
+	}
+	userUUID, parseErr := uuid.Parse(md.Get("uuid")[0])
+	if parseErr != nil {
+		return fmt.Errorf("can't parse uuid from metadata: %w", parseErr)
+	}
+
+	user := entity.User{
+		ID:            userUUID,
+		Name:          c.metadata.Get("username")[0],
+		MessageStream: msgStream,
+	}
+
 	log.Println(c.metadata.Get("username")[0], "connected to room", c.metadata.Get("room")[0])
 
 	defer func() {
@@ -59,7 +80,7 @@ func (c *ChatClient) DoChatting() error {
 		}
 	}()
 
-	return c.readAndWriteMessagesFromStream(msgStream)
+	return c.readAndWriteMessagesFromStream(user)
 }
 
 func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
@@ -81,12 +102,12 @@ func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
-func (c *ChatClient) readAndWriteMessagesFromStream(msgStream chat.Chat_DoChattingClient) error {
+func (c *ChatClient) readAndWriteMessagesFromStream(user entity.User) error {
 	readErrCh := make(chan error)
 	writeErrCh := make(chan error)
 
-	go c.readMessages(msgStream, readErrCh)
-	go c.writeMessages(msgStream, writeErrCh)
+	go c.readMessages(user, readErrCh)
+	go c.writeMessages(user, writeErrCh)
 
 	select {
 	case err := <-readErrCh:
@@ -100,11 +121,11 @@ func (c *ChatClient) readAndWriteMessagesFromStream(msgStream chat.Chat_DoChatti
 	return nil
 }
 
-func (c *ChatClient) readMessages(inMsgStream chat.Chat_DoChattingClient, errCh chan<- error) {
+func (c *ChatClient) readMessages(user entity.User, errCh chan<- error) {
 	defer close(errCh)
 
 	for {
-		msg, err := inMsgStream.Recv()
+		msg, err := user.MessageStream.Recv()
 		if err == io.EOF {
 			errCh <- ErrServerDisconnected
 			return
@@ -120,11 +141,21 @@ func (c *ChatClient) readMessages(inMsgStream chat.Chat_DoChattingClient, errCh 
 			return
 		}
 
-		fmt.Printf("%s: %s", msg.Username, msg.Content)
+		fromUserID, parseErr := uuid.Parse(msg.FromUuid)
+		if parseErr != nil {
+			errCh <- fmt.Errorf("can't parse uuid: %w", parseErr)
+		}
+		if fromUserID != user.ID {
+			fmt.Printf("%s: %s", msg.Username, msg.Content)
+		} else {
+			if !strings.HasPrefix(msg.Username, "room") {
+				fmt.Printf("%s (you): %s", msg.Username, msg.Content)
+			}
+		}
 	}
 }
 
-func (c *ChatClient) writeMessages(outMsgStream chat.Chat_DoChattingClient, errCh chan<- error) {
+func (c *ChatClient) writeMessages(user entity.User, errCh chan<- error) {
 	defer close(errCh)
 
 	for {
@@ -142,7 +173,7 @@ func (c *ChatClient) writeMessages(outMsgStream chat.Chat_DoChattingClient, errC
 		}
 
 		req := &chat.MessageRequest{Content: msg}
-		if err := outMsgStream.Send(req); err != nil {
+		if err := user.MessageStream.Send(req); err != nil {
 			errCh <- fmt.Errorf("failed to send message: %w", err)
 			return
 		}

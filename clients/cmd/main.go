@@ -6,6 +6,9 @@ import (
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/spf13/viper"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 const cfgPath = "configs/app.env"
@@ -20,6 +23,9 @@ func main() {
 
 	username, room := mustReadUser()
 	chatClient := client.NewChatClient(clientCfg, username, room)
+
+	stopChan := make(chan os.Signal, 2)
+	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	err := chatClient.DoChatting()
 	if err != nil {
