@@ -1,0 +1,9 @@
+services:
+  chat-server:
+    build: ./
+    restart: "on-failure"
+    container_name: chat-server
+    ports:
+      - "8909:8909"
+    env_file:
+      - "./configs/app.env"
