@@ -62,7 +62,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 
 	log.Println("user", username, "connected to room", roomName)
 	room.PushMessage(entity.Message{
-		Content:  fmt.Sprintf("user %s connected to room %s", username, roomName),
+		Content:  fmt.Sprintf("user %s connected", username),
 		FromName: fmt.Sprintf("room %s", roomName),
 		FromUUID: user.ID,
 	})
@@ -112,7 +112,14 @@ func (s *ChatService) disconnectUser(user entity.User, room *chatroom.Room) {
 
 	if ok := s.deleteRoomIfEmpty(room); ok {
 		log.Println("room", room.Name, "deleted")
+		return
 	}
+
+	room.PushMessage(entity.Message{
+		Content:  fmt.Sprintf("user %s disconnected", user.Name),
+		FromName: fmt.Sprintf("room %s", room.Name),
+		FromUUID: user.ID,
+	})
 }
 
 func (s *ChatService) deleteRoomIfEmpty(room *chatroom.Room) bool {
