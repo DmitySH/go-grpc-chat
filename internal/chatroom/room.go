@@ -3,8 +3,11 @@ package chatroom
 import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
+	"github.com/DmitySH/go-grpc-chat/internal/producer"
+	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
+	"github.com/segmentio/kafka-go"
 	"log"
 	"sync"
 )
@@ -15,13 +18,15 @@ type Room struct {
 	users        map[uuid.UUID]entity.User
 	messageQueue chan entity.Message
 	closed       bool
+	kafkaConfig  config.KafkaConfig
 }
 
-func NewRoom(name string) *Room {
+func NewRoom(name string, kafkaConfig config.KafkaConfig) *Room {
 	return &Room{
 		Name:         name,
 		users:        make(map[uuid.UUID]entity.User),
 		messageQueue: make(chan entity.Message),
+		kafkaConfig:  kafkaConfig,
 	}
 }
 
@@ -73,6 +78,8 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 	r.usersMu.RLock()
 	defer r.usersMu.RUnlock()
 
+	kafkaMessages := make([]kafka.Message, 0, len(r.users))
+
 	for _, user := range r.users {
 		err := user.MessageStream.Send(&chat.MessageResponse{
 			Username: msg.FromName,
@@ -82,6 +89,10 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 
 		if err != nil {
 			log.Printf("can't send message to %s: %v", user.Name, err)
+		} else {
+			kafkaMessages = append(kafkaMessages, newKafkaMessage(msg, user))
 		}
 	}
+
+	go producer.WriteMessagesToKafka(kafkaMessages, r.kafkaConfig)
 }

@@ -5,12 +5,14 @@ import (
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/services"
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
+	"github.com/segmentio/kafka-go"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -28,6 +30,12 @@ func main() {
 		port: viper.GetInt("SERVER_PORT"),
 	}
 
+	kafkaConfig := config.KafkaConfig{
+		Addr:                   kafka.TCP(strings.Split(viper.GetString("KAFKA_HOSTS"), ",")...),
+		Topic:                  viper.GetString("KAFKA_TOPIC"),
+		AllowAutoTopicCreation: viper.GetBool("KAFKA_AUTO_TOPIC_CREATION"),
+	}
+
 	listener, err := net.Listen("tcp",
 		fmt.Sprintf("%s:%d", serverCfg.host, serverCfg.port))
 
@@ -40,7 +48,7 @@ func main() {
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
 
-	chatService := services.NewChatService()
+	chatService := services.NewChatService(kafkaConfig)
 
 	chat.RegisterChatServer(grpcServer, chatService)
 

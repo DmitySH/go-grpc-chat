@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/DmitySH/go-grpc-chat/clients/client"
+	"github.com/DmitySH/go-grpc-chat/clients/app/client"
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/spf13/viper"
 	"log"

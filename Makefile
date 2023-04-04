@@ -10,4 +10,8 @@ run:
 
 .PHONY: run-client
 run-client:
-	go run clients/cmd/main.go
+	go run clients/app/cmd/main.go
+
+.PHONY: up
+up:
+	docker-compose up --build

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
+	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -20,13 +21,15 @@ var ErrUserDisconnected = errors.New("user disconnected")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
-	rooms   map[string]*chatroom.Room
-	roomsMu sync.Mutex
+	rooms       map[string]*chatroom.Room
+	roomsMu     sync.Mutex
+	kafkaConfig config.KafkaConfig
 }
 
-func NewChatService() *ChatService {
+func NewChatService(kafkaConfig config.KafkaConfig) *ChatService {
 	service := &ChatService{
-		rooms: make(map[string]*chatroom.Room),
+		rooms:       make(map[string]*chatroom.Room),
+		kafkaConfig: kafkaConfig,
 	}
 
 	return service
@@ -96,7 +99,7 @@ func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*chatroo
 
 func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	if _, ok := s.rooms[roomName]; !ok {
-		s.rooms[roomName] = chatroom.NewRoom(roomName)
+		s.rooms[roomName] = chatroom.NewRoom(roomName, s.kafkaConfig)
 		s.rooms[roomName].StartDeliveringMessages()
 
 		log.Println("room", roomName, "created")

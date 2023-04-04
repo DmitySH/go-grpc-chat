@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
-	"github.com/DmitySH/go-grpc-chat/clients/entity"
+	"github.com/DmitySH/go-grpc-chat/clients/app/entity"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
