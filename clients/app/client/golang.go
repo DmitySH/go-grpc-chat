@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/clients/app/entity"
+	"github.com/DmitySH/go-grpc-chat/pkg/cryptotransfer"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -29,13 +30,15 @@ type Config struct {
 
 type ChatClient struct {
 	config   Config
-	metadata metadata.MD
+	username string
+	roomName string
 }
 
 func NewChatClient(config Config, username, room string) *ChatClient {
 	return &ChatClient{
 		config:   config,
-		metadata: metadata.New(map[string]string{"username": username, "room": room}),
+		username: username,
+		roomName: room,
 	}
 }
 
@@ -47,29 +50,21 @@ func (c *ChatClient) DoChatting() error {
 	defer conn.Close()
 
 	grpcClient := chat.NewChatClient(conn)
-	ctx := metadata.NewOutgoingContext(context.Background(), c.metadata)
+	ctx := metadata.NewOutgoingContext(context.Background(),
+		metadata.New(map[string]string{"username": c.username, "room": c.roomName}),
+	)
 
 	msgStream, startChatErr := grpcClient.DoChatting(ctx)
 	if startChatErr != nil {
 		return fmt.Errorf("failed connect to chat: %w", startChatErr)
 	}
 
-	md, getMdErr := msgStream.Header()
-	if getMdErr != nil {
-		return fmt.Errorf("failed to get metadata: %w", getMdErr)
-	}
-	userUUID, getUUIDErr := getUUIDFromMetadata(md)
-	if getUUIDErr != nil {
-		return fmt.Errorf("failed to get uuid from metadata: %w", getUUIDErr)
+	user, createUserErr := c.createChatUser(c.username, msgStream)
+	if createUserErr != nil {
+		return fmt.Errorf("can't create chat user: %w", createUserErr)
 	}
 
-	user := entity.User{
-		ID:            userUUID,
-		Name:          c.metadata.Get("username")[0],
-		MessageStream: msgStream,
-	}
-
-	log.Println(c.metadata.Get("username")[0], "connected to room", c.metadata.Get("room")[0])
+	log.Println(c.username, "connected to room", c.roomName)
 
 	defer func() {
 		if closeSendErr := msgStream.CloseSend(); closeSendErr != nil {
@@ -99,6 +94,33 @@ func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
+func (c *ChatClient) createChatUser(username string, msgStream chat.Chat_DoChattingClient) (entity.User, error) {
+	md, getMdErr := msgStream.Header()
+	if getMdErr != nil {
+		return entity.User{}, fmt.Errorf("failed to get metadata: %w", getMdErr)
+	}
+	userUUID, getUUIDErr := getUUIDFromMetadata(md)
+	if getUUIDErr != nil {
+		return entity.User{}, fmt.Errorf("failed to get uuid from metadata: %w", getUUIDErr)
+	}
+	encodedServerPublicKey, getServerPublicKeyErr := getServerPublicKeyFromMetadata(md)
+	if getServerPublicKeyErr != nil {
+		return entity.User{}, fmt.Errorf("failed to get cipher key from metadata: %w", getServerPublicKeyErr)
+	}
+
+	serverPublicKey, decodeKeyErr := cryptotransfer.DecodePublicKeyFromBase64(encodedServerPublicKey)
+	if decodeKeyErr != nil {
+		return entity.User{}, fmt.Errorf("can't decode key from base64: %w", decodeKeyErr)
+	}
+
+	return entity.User{
+		ID:              userUUID,
+		Name:            username,
+		MessageStream:   msgStream,
+		ServerPublicKey: serverPublicKey,
+	}, nil
+}
+
 func getUUIDFromMetadata(md metadata.MD) (uuid.UUID, error) {
 	if len(md.Get("uuid")) == 0 {
 		return uuid.UUID{}, errors.New("no uuid in metadata")
@@ -109,6 +131,14 @@ func getUUIDFromMetadata(md metadata.MD) (uuid.UUID, error) {
 	}
 
 	return userUUID, nil
+}
+
+func getServerPublicKeyFromMetadata(md metadata.MD) (string, error) {
+	if len(md.Get("cipher_key")) == 0 {
+		return "", errors.New("no cipher key in metadata")
+	}
+
+	return md.Get("cipher_key")[0], nil
 }
 
 func (c *ChatClient) readAndWriteMessagesFromStream(user entity.User) error {
@@ -188,7 +218,13 @@ func (c *ChatClient) writeMessages(user entity.User, errCh chan<- error) {
 			return
 		}
 
-		req := &chat.MessageRequest{Content: msg}
+		cipherMessage, encryptErr := cryptotransfer.EncryptRSAMessage(msg, user.ServerPublicKey)
+		if encryptErr != nil {
+			errCh <- fmt.Errorf("can't encrypt user's message: %w", encryptErr)
+			return
+		}
+
+		req := &chat.MessageRequest{Content: cipherMessage}
 		if err := user.MessageStream.Send(req); err != nil {
 			errCh <- fmt.Errorf("failed to send message: %w", err)
 			return

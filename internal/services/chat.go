@@ -7,6 +7,7 @@ import (
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
+	"github.com/DmitySH/go-grpc-chat/pkg/cryptotransfer"
 	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -17,7 +18,10 @@ import (
 	"sync"
 )
 
+const cryptoBits = 2048
+
 var ErrUserDisconnected = errors.New("user disconnected")
+var ErrUnsafeChat = errors.New("can't use cipher for messages")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
@@ -35,20 +39,28 @@ func NewChatService(kafkaConfig config.KafkaConfig) *ChatService {
 	return service
 }
 
+// TODO: ошибки, отправляемые наружу сделать бизнесовыми.
+
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	md, mdErr := checkMetadata(msgStream.Context())
-
 	if mdErr != nil {
 		return mdErr
+	}
+
+	serverKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
+	if generateKeyErr != nil {
+		log.Println("can't generate key pair:", generateKeyErr)
+		return ErrUnsafeChat
 	}
 
 	username := md.Get("username")[0]
 	roomName := md.Get("room")[0]
 
 	user := entity.User{
-		ID:            uuid.New(),
-		Name:          username,
-		MessageStream: msgStream,
+		ID:               uuid.New(),
+		Name:             username,
+		MessageStream:    msgStream,
+		ServerPrivateKey: serverKeyPair,
 	}
 
 	room, addUserErr := s.addUserToRoom(roomName, user)
@@ -57,8 +69,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		return fmt.Errorf("can't add user to room %s: %w", room.Name, addUserErr)
 	}
 
-	sendMdErr := user.MessageStream.SendHeader(metadata.New(map[string]string{"uuid": user.ID.String()}))
-	if sendMdErr != nil {
+	if sendMdErr := user.MessageStream.SendHeader(s.prepareUserMeta(user)); sendMdErr != nil {
 		log.Printf("can't send header metadata for user %s: %v\n", user.Name, sendMdErr)
 		return fmt.Errorf("can't add user to room %s: %w", user.Name, sendMdErr)
 	}
@@ -109,6 +120,15 @@ func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	return room
 }
 
+func (s *ChatService) prepareUserMeta(user entity.User) metadata.MD {
+	encodedPublicKey := cryptotransfer.EncodePublicKeyToBase64(&user.ServerPrivateKey.PublicKey)
+
+	return metadata.New(map[string]string{
+		"uuid":       user.ID.String(),
+		"cipher_key": encodedPublicKey,
+	})
+}
+
 func (s *ChatService) disconnectUser(user entity.User, room *chatroom.Room) {
 	room.DeleteUser(user.ID)
 	log.Println("user", user.Name, "disconnected")
@@ -152,12 +172,17 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 		return fmt.Errorf("can't receive message: %w", err)
 	}
 
+	message, decryptErr := cryptotransfer.DecryptRSAMessage(in.Content, user.ServerPrivateKey)
+	if decryptErr != nil {
+		return fmt.Errorf("can't decrypt message: %w", decryptErr)
+	}
+
 	room.PushMessage(entity.Message{
-		Content:  in.Content,
+		Content:  message,
 		FromName: user.Name,
 		FromUUID: user.ID,
 	})
-	log.Printf("room %s: %s said %s", room.Name, user.Name, in.Content)
+	log.Printf("room %s: %s said %s", room.Name, user.Name, message)
 
 	return nil
 }
