@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/api/chat"
@@ -18,9 +19,12 @@ import (
 	"strings"
 )
 
+const cryptoBits = 2048
+
 var (
 	ErrUserStopChatting   = errors.New("user stopped chatting")
 	ErrServerDisconnected = errors.New("server disconnected")
+	ErrUnsafeChat         = errors.New("can't use cipher for messages")
 )
 
 type Config struct {
@@ -50,16 +54,20 @@ func (c *ChatClient) DoChatting() error {
 	defer conn.Close()
 
 	grpcClient := chat.NewChatClient(conn)
-	ctx := metadata.NewOutgoingContext(context.Background(),
-		metadata.New(map[string]string{"username": c.username, "room": c.roomName}),
-	)
+	clientKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
+	if generateKeyErr != nil {
+		log.Println("can't generate key pair:", generateKeyErr)
+		return ErrUnsafeChat
+	}
+
+	ctx := metadata.NewOutgoingContext(context.Background(), c.prepareMetaForServer(&clientKeyPair.PublicKey))
 
 	msgStream, startChatErr := grpcClient.DoChatting(ctx)
 	if startChatErr != nil {
 		return fmt.Errorf("failed connect to chat: %w", startChatErr)
 	}
 
-	user, createUserErr := c.createChatUser(c.username, msgStream)
+	user, createUserErr := c.createChatUser(c.username, msgStream, clientKeyPair)
 	if createUserErr != nil {
 		return fmt.Errorf("can't create chat user: %w", createUserErr)
 	}
@@ -94,7 +102,14 @@ func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
 	return conn, nil
 }
 
-func (c *ChatClient) createChatUser(username string, msgStream chat.Chat_DoChattingClient) (entity.User, error) {
+func (c *ChatClient) prepareMetaForServer(pubKey *rsa.PublicKey) metadata.MD {
+	encodedPublicKey := cryptotransfer.EncodePublicKeyToBase64(pubKey)
+
+	return metadata.New(map[string]string{"username": c.username, "room": c.roomName, "cipher_key": encodedPublicKey})
+}
+
+func (c *ChatClient) createChatUser(username string, msgStream chat.Chat_DoChattingClient,
+	privateKey *rsa.PrivateKey) (entity.User, error) {
 	md, getMdErr := msgStream.Header()
 	if getMdErr != nil {
 		return entity.User{}, fmt.Errorf("failed to get metadata: %w", getMdErr)
@@ -110,14 +125,15 @@ func (c *ChatClient) createChatUser(username string, msgStream chat.Chat_DoChatt
 
 	serverPublicKey, decodeKeyErr := cryptotransfer.DecodePublicKeyFromBase64(encodedServerPublicKey)
 	if decodeKeyErr != nil {
-		return entity.User{}, fmt.Errorf("can't decode key from base64: %w", decodeKeyErr)
+		return entity.User{}, fmt.Errorf("can't decode server's key from base64: %w", decodeKeyErr)
 	}
 
 	return entity.User{
-		ID:              userUUID,
-		Name:            username,
-		MessageStream:   msgStream,
-		ServerPublicKey: serverPublicKey,
+		ID:               userUUID,
+		Name:             username,
+		MessageStream:    msgStream,
+		ServerPublicKey:  serverPublicKey,
+		ClientPrivateKey: privateKey,
 	}, nil
 }
 
@@ -190,12 +206,20 @@ func (c *ChatClient) readMessages(user entity.User, errCh chan<- error) {
 		fromUserID, parseErr := uuid.Parse(msg.FromUuid)
 		if parseErr != nil {
 			errCh <- fmt.Errorf("can't parse uuid: %w", parseErr)
+			return
 		}
+
+		decryptedMessage, decryptErr := cryptotransfer.DecryptRSAMessage(msg.Content, user.ClientPrivateKey)
+		if decryptErr != nil {
+			errCh <- fmt.Errorf("can't decrypt message: %w", parseErr)
+			return
+		}
+
 		if fromUserID != user.ID {
-			fmt.Printf("%s: %s", msg.Username, msg.Content)
+			fmt.Printf("%s: %s", msg.FromName, decryptedMessage)
 		} else {
-			if !strings.HasPrefix(msg.Username, "room") {
-				fmt.Printf("%s (you): %s", msg.Username, msg.Content)
+			if !strings.HasPrefix(msg.FromName, "room") {
+				fmt.Printf("%s (you): %s", msg.FromName, decryptedMessage)
 			}
 		}
 	}

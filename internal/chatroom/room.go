@@ -5,6 +5,7 @@ import (
 	"github.com/DmitySH/go-grpc-chat/api/chat"
 	"github.com/DmitySH/go-grpc-chat/internal/producer"
 	"github.com/DmitySH/go-grpc-chat/pkg/config"
+	"github.com/DmitySH/go-grpc-chat/pkg/cryptotransfer"
 	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -81,12 +82,7 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 	kafkaMessages := make([]kafka.Message, 0, len(r.users))
 
 	for _, user := range r.users {
-		err := user.MessageStream.Send(&chat.MessageResponse{
-			Username: msg.FromName,
-			Content:  msg.Content + "\n",
-			FromUuid: msg.FromUUID.String(),
-		})
-
+		err := encryptAndSendMessage(msg, user)
 		if err != nil {
 			log.Printf("can't send message to %s: %v", user.Name, err)
 		} else {
@@ -95,4 +91,19 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 	}
 
 	go producer.WriteMessagesToKafka(kafkaMessages, r.kafkaConfig)
+}
+
+func encryptAndSendMessage(msg entity.Message, user entity.User) error {
+	cipherMessage, encryptErr := cryptotransfer.EncryptRSAMessage(msg.Content+"\n", user.ClientPublicKey)
+	if encryptErr != nil {
+		return fmt.Errorf("can't encrypt message: %w", encryptErr)
+	}
+
+	sendErr := user.MessageStream.Send(&chat.MessageResponse{
+		FromName: msg.FromName,
+		Content:  cipherMessage,
+		FromUuid: msg.FromUUID.String(),
+	})
+
+	return sendErr
 }

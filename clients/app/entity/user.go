@@ -7,8 +7,9 @@ import (
 )
 
 type User struct {
-	ID              uuid.UUID
-	Name            string
-	MessageStream   chat.Chat_DoChattingClient
-	ServerPublicKey *rsa.PublicKey
+	ID               uuid.UUID
+	Name             string
+	MessageStream    chat.Chat_DoChattingClient
+	ServerPublicKey  *rsa.PublicKey
+	ClientPrivateKey *rsa.PrivateKey
 }

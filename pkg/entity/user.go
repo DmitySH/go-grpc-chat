@@ -11,4 +11,5 @@ type User struct {
 	Name             string
 	MessageStream    chat.Chat_DoChattingServer
 	ServerPrivateKey *rsa.PrivateKey
+	ClientPublicKey  *rsa.PublicKey
 }

@@ -47,20 +47,27 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		return mdErr
 	}
 
+	username := md.Get("username")[0]
+	roomName := md.Get("room")[0]
+	encodedClientPublicKey := md.Get("cipher_key")[0]
+
 	serverKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
 	if generateKeyErr != nil {
 		log.Println("can't generate key pair:", generateKeyErr)
 		return ErrUnsafeChat
 	}
 
-	username := md.Get("username")[0]
-	roomName := md.Get("room")[0]
+	clientPublicKey, decodeKeyErr := cryptotransfer.DecodePublicKeyFromBase64(encodedClientPublicKey)
+	if decodeKeyErr != nil {
+		return fmt.Errorf("can't decode client's key from base64: %w", decodeKeyErr)
+	}
 
 	user := entity.User{
 		ID:               uuid.New(),
 		Name:             username,
 		MessageStream:    msgStream,
 		ServerPrivateKey: serverKeyPair,
+		ClientPublicKey:  clientPublicKey,
 	}
 
 	room, addUserErr := s.addUserToRoom(roomName, user)
@@ -69,7 +76,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		return fmt.Errorf("can't add user to room %s: %w", room.Name, addUserErr)
 	}
 
-	if sendMdErr := user.MessageStream.SendHeader(s.prepareUserMeta(user)); sendMdErr != nil {
+	if sendMdErr := user.MessageStream.SendHeader(prepareMetaForClient(user)); sendMdErr != nil {
 		log.Printf("can't send header metadata for user %s: %v\n", user.Name, sendMdErr)
 		return fmt.Errorf("can't add user to room %s: %w", user.Name, sendMdErr)
 	}
@@ -78,7 +85,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	room.PushMessage(entity.Message{
 		Content:  fmt.Sprintf("user %s connected", username),
 		FromName: fmt.Sprintf("room %s", roomName),
-		FromUUID: user.ID,
+		FromUUID: uuid.Nil,
 	})
 	defer s.disconnectUser(user, room)
 
@@ -120,7 +127,7 @@ func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
 	return room
 }
 
-func (s *ChatService) prepareUserMeta(user entity.User) metadata.MD {
+func prepareMetaForClient(user entity.User) metadata.MD {
 	encodedPublicKey := cryptotransfer.EncodePublicKeyToBase64(&user.ServerPrivateKey.PublicKey)
 
 	return metadata.New(map[string]string{
@@ -141,7 +148,7 @@ func (s *ChatService) disconnectUser(user entity.User, room *chatroom.Room) {
 	room.PushMessage(entity.Message{
 		Content:  fmt.Sprintf("user %s disconnected", user.Name),
 		FromName: fmt.Sprintf("room %s", room.Name),
-		FromUUID: user.ID,
+		FromUUID: uuid.Nil,
 	})
 }
 
@@ -158,31 +165,39 @@ func (s *ChatService) deleteRoomIfEmpty(room *chatroom.Room) bool {
 }
 
 func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) error {
-	in, err := user.MessageStream.Recv()
+	in, receiveMessageErr := user.MessageStream.Recv()
 
-	if err == io.EOF {
+	if receiveMessageErr == io.EOF {
 		return ErrUserDisconnected
 	}
 
-	if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+	if st, ok := status.FromError(receiveMessageErr); ok && st.Code() == codes.Canceled {
 		return ErrUserDisconnected
 	}
 
-	if err != nil {
-		return fmt.Errorf("can't receive message: %w", err)
+	if receiveMessageErr != nil {
+		return fmt.Errorf("can't receive message: %w", receiveMessageErr)
 	}
 
-	message, decryptErr := cryptotransfer.DecryptRSAMessage(in.Content, user.ServerPrivateKey)
+	if sendMessageErr := decryptAndSendMessage(room, in.Content, user); sendMessageErr != nil {
+		return fmt.Errorf("can't send message: %w", sendMessageErr)
+	}
+
+	return nil
+}
+
+func decryptAndSendMessage(room *chatroom.Room, encryptedMessage string, user entity.User) error {
+	decryptedMessage, decryptErr := cryptotransfer.DecryptRSAMessage(encryptedMessage, user.ServerPrivateKey)
 	if decryptErr != nil {
 		return fmt.Errorf("can't decrypt message: %w", decryptErr)
 	}
 
 	room.PushMessage(entity.Message{
-		Content:  message,
+		Content:  decryptedMessage,
 		FromName: user.Name,
 		FromUUID: user.ID,
 	})
-	log.Printf("room %s: %s said %s", room.Name, user.Name, message)
+	log.Printf("room %s: %s said %s", room.Name, user.Name, decryptedMessage)
 
 	return nil
 }
@@ -197,6 +212,9 @@ func checkMetadata(ctx context.Context) (metadata.MD, error) {
 	}
 	if len(md.Get("room")) == 0 {
 		return nil, status.Error(codes.PermissionDenied, "no room in metadata")
+	}
+	if len(md.Get("cipher_key")) == 0 {
+		return nil, status.Error(codes.PermissionDenied, "no cipher key in metadata")
 	}
 
 	return md, nil
