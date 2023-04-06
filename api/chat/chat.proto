@@ -13,9 +13,7 @@ message MessageRequest {
 }
 
 message MessageResponse {
-  string username = 1;
-  string content = 2;
+  string content = 1;
+  string from_name = 2;
   string from_uuid = 3;
 }
-
-
