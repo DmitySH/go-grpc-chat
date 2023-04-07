@@ -19,7 +19,7 @@ type Room struct {
 	users        map[uuid.UUID]entity.User
 	messageQueue chan entity.Message
 	closed       bool
-	kafkaConfig  config.KafkaConfig
+	kafkaWriter  *kafka.Writer
 }
 
 func NewRoom(name string, kafkaConfig config.KafkaConfig) *Room {
@@ -27,7 +27,11 @@ func NewRoom(name string, kafkaConfig config.KafkaConfig) *Room {
 		Name:         name,
 		users:        make(map[uuid.UUID]entity.User),
 		messageQueue: make(chan entity.Message),
-		kafkaConfig:  kafkaConfig,
+		kafkaWriter: &kafka.Writer{
+			Addr:                   kafkaConfig.Addr,
+			Topic:                  kafkaConfig.Topic,
+			AllowAutoTopicCreation: kafkaConfig.AllowAutoTopicCreation,
+		},
 	}
 }
 
@@ -57,6 +61,9 @@ func (r *Room) StartDeliveringMessages() {
 	go func() {
 		for msg := range r.messageQueue {
 			r.sendMessageToAllUsers(msg)
+		}
+		if err := r.kafkaWriter.Close(); err != nil {
+			log.Println("can't close kafka writer in room", r.Name)
 		}
 	}()
 }
@@ -90,7 +97,12 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 		}
 	}
 
-	go producer.WriteMessagesToKafka(kafkaMessages, r.kafkaConfig)
+	go func() {
+		err := producer.AttemptSendMessages(r.kafkaWriter, kafkaMessages)
+		if err != nil {
+			log.Println(err)
+		}
+	}()
 }
 
 func encryptAndSendMessage(msg entity.Message, user entity.User) error {

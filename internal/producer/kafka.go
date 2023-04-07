@@ -4,37 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/DmitySH/go-grpc-chat/pkg/config"
 	"github.com/segmentio/kafka-go"
 	"log"
 	"time"
 )
 
-const maxKafkaRetries = 3
+const (
+	maxKafkaRetries         = 3
+	defaultWaitTime         = time.Second * 5
+	defaultBetweenRetryTime = time.Millisecond * 250
+)
 
-func WriteMessagesToKafka(messages []kafka.Message, config config.KafkaConfig) {
-	writer := kafka.Writer{
-		Addr:                   config.Addr,
-		Topic:                  config.Topic,
-		AllowAutoTopicCreation: config.AllowAutoTopicCreation,
-	}
-	defer func() {
-		if err := writer.Close(); err != nil {
-			log.Println("can't close kafka writer:", err)
-		}
-	}()
-
-	if err := attemptSendMessages(&writer, messages); err != nil {
-		log.Println(err)
-	}
-}
-
-func attemptSendMessages(writer *kafka.Writer, messages []kafka.Message) error {
+func AttemptSendMessages(writer *kafka.Writer, messages []kafka.Message) error {
 	var err error
 	for i := 0; i < maxKafkaRetries; i++ {
 		err = writeMessages(writer, messages)
 		if errors.Is(err, kafka.LeaderNotAvailable) || errors.Is(err, context.DeadlineExceeded) {
-			time.Sleep(time.Millisecond * 250)
+			time.Sleep(defaultBetweenRetryTime)
 			continue
 		}
 
@@ -48,10 +34,20 @@ func attemptSendMessages(writer *kafka.Writer, messages []kafka.Message) error {
 }
 
 func writeMessages(w *kafka.Writer, messages []kafka.Message) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultWaitTime)
 	defer cancel()
 
-	err := w.WriteMessages(ctx, messages...)
-
-	return err
+	switch err := w.WriteMessages(ctx, messages...).(type) {
+	case nil:
+		return nil
+	case kafka.WriteErrors:
+		for i := range messages {
+			if err[i] != nil {
+				log.Println("message with key", string(messages[i].Key), "was not sent")
+			}
+		}
+		return err
+	default:
+		return err
+	}
 }
