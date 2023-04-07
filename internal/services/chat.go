@@ -21,7 +21,6 @@ import (
 const cryptoBits = 2048
 
 var ErrUserDisconnected = errors.New("user disconnected")
-var ErrUnsafeChat = errors.New("can't use cipher for messages")
 
 type ChatService struct {
 	chat.UnimplementedChatServer
@@ -39,27 +38,70 @@ func NewChatService(kafkaConfig config.KafkaConfig) *ChatService {
 	return service
 }
 
-// TODO: ошибки, отправляемые наружу сделать бизнесовыми.
-
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 	md, mdErr := checkMetadata(msgStream.Context())
 	if mdErr != nil {
 		return mdErr
 	}
 
-	username := md.Get("username")[0]
 	roomName := md.Get("room")[0]
+
+	user, createUserErr := createChatUser(md, msgStream)
+	if createUserErr != nil {
+		log.Println("can't create user:", createUserErr)
+		return status.Error(codes.Internal, "can't create user:"+createUserErr.Error())
+	}
+
+	room, addUserErr := s.addUserToRoom(roomName, user)
+	if addUserErr != nil {
+		log.Printf("can't add user to room %s: %v\n", room.Name, addUserErr)
+		return status.Error(codes.Internal, "can't add user to room:"+addUserErr.Error())
+	}
+
+	if sendMdErr := user.MessageStream.SendHeader(prepareMetaForClient(user)); sendMdErr != nil {
+		log.Printf("can't send header metadata for user %s: %v\n", user.Name, sendMdErr)
+		return status.Error(codes.Internal, "can't send header metadata:"+sendMdErr.Error())
+	}
+
+	log.Println("user", user.Name, "connected to room", roomName)
+	room.PushMessage(entity.Message{
+		Content:  fmt.Sprintf("user %s connected", user.Name),
+		FromName: fmt.Sprintf("room %s", roomName),
+		FromUUID: uuid.Nil,
+	})
+	defer s.disconnectUser(user, room)
+
+	if sendHandshakeErr := sendHandshake(user.MessageStream); sendHandshakeErr != nil {
+		log.Println("can't send handshake to client:", sendHandshakeErr)
+		return status.Error(codes.Internal, "can't send handshake to client:"+sendHandshakeErr.Error())
+	}
+
+	for {
+		err := s.handleInputMessage(user, room)
+		if errors.Is(err, ErrUserDisconnected) {
+			return nil
+		}
+
+		if err != nil {
+			log.Println("can't handle input message:", err)
+			return status.Error(codes.Internal, "can't handle input message:"+err.Error())
+		}
+	}
+}
+
+func createChatUser(md metadata.MD, msgStream chat.Chat_DoChattingServer) (entity.User, error) {
+	username := md.Get("username")[0]
 	encodedClientPublicKey := md.Get("cipher_key")[0]
 
 	serverKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
 	if generateKeyErr != nil {
 		log.Println("can't generate key pair:", generateKeyErr)
-		return ErrUnsafeChat
+		return entity.User{}, fmt.Errorf("can't generate key pair: %w", generateKeyErr)
 	}
 
 	clientPublicKey, decodeKeyErr := cryptotransfer.DecodePublicKeyFromBase64(encodedClientPublicKey)
 	if decodeKeyErr != nil {
-		return fmt.Errorf("can't decode client's key from base64: %w", decodeKeyErr)
+		return entity.User{}, fmt.Errorf("can't decode client's key from base64: %w", decodeKeyErr)
 	}
 
 	user := entity.User{
@@ -70,36 +112,7 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		ClientPublicKey:  clientPublicKey,
 	}
 
-	room, addUserErr := s.addUserToRoom(roomName, user)
-	if addUserErr != nil {
-		log.Printf("can't add user to room %s: %v\n", room.Name, addUserErr)
-		return fmt.Errorf("can't add user to room %s: %w", room.Name, addUserErr)
-	}
-
-	if sendMdErr := user.MessageStream.SendHeader(prepareMetaForClient(user)); sendMdErr != nil {
-		log.Printf("can't send header metadata for user %s: %v\n", user.Name, sendMdErr)
-		return fmt.Errorf("can't add user to room %s: %w", user.Name, sendMdErr)
-	}
-
-	log.Println("user", username, "connected to room", roomName)
-	room.PushMessage(entity.Message{
-		Content:  fmt.Sprintf("user %s connected", username),
-		FromName: fmt.Sprintf("room %s", roomName),
-		FromUUID: uuid.Nil,
-	})
-	defer s.disconnectUser(user, room)
-
-	for {
-		err := s.handleInputMessage(user, room)
-		if errors.Is(err, ErrUserDisconnected) {
-			return nil
-		}
-
-		if err != nil {
-			log.Println(err)
-			return err
-		}
-	}
+	return user, nil
 }
 
 func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*chatroom.Room, error) {
@@ -150,6 +163,16 @@ func (s *ChatService) disconnectUser(user entity.User, room *chatroom.Room) {
 		FromName: fmt.Sprintf("room %s", room.Name),
 		FromUUID: uuid.Nil,
 	})
+}
+
+func sendHandshake(msgStream chat.Chat_DoChattingServer) error {
+	sendErr := msgStream.Send(&chat.MessageResponse{
+		Content:  "handshake",
+		FromName: "server",
+		FromUuid: "",
+	})
+
+	return sendErr
 }
 
 func (s *ChatService) deleteRoomIfEmpty(room *chatroom.Room) bool {
