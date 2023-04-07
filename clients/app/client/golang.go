@@ -22,9 +22,13 @@ import (
 const cryptoBits = 2048
 
 var (
-	ErrUserStopChatting   = errors.New("user stopped chatting")
-	ErrServerDisconnected = errors.New("server disconnected")
-	ErrUnsafeChat         = errors.New("can't use cipher for messages")
+	ErrUserStopChatting       = errors.New("user stopped chatting")
+	ErrServerDisconnected     = errors.New("server disconnected")
+	ErrUnsafeChat             = errors.New("client failed to use message encryption")
+	ErrSeverRefusedConnection = errors.New("server refused connection")
+	ErrConnectServer          = errors.New("can't connect to chat server")
+	ErrClientside             = errors.New("client side error")
+	ErrChatting               = errors.New("error during chatting")
 )
 
 type Config struct {
@@ -46,33 +50,42 @@ func NewChatClient(config Config, username, room string) *ChatClient {
 	}
 }
 
-func (c *ChatClient) DoChatting() error {
-	conn, connErr := c.createGrpcConn()
-	if connErr != nil {
-		return fmt.Errorf("can't create grpc conn: %w", connErr)
-	}
-	defer conn.Close()
+// TODO: разделить уровни и файлы логов.
 
-	grpcClient := chat.NewChatClient(conn)
+func (c *ChatClient) DoChatting() error {
 	clientKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
 	if generateKeyErr != nil {
 		log.Println("can't generate key pair:", generateKeyErr)
 		return ErrUnsafeChat
 	}
 
+	conn, connErr := c.createGrpcConn()
+	if connErr != nil {
+		log.Println("can't create grpc connection:", connErr)
+		return ErrConnectServer
+	}
+	defer conn.Close()
+
 	ctx := metadata.NewOutgoingContext(context.Background(), c.prepareMetaForServer(&clientKeyPair.PublicKey))
+
+	grpcClient := chat.NewChatClient(conn)
 
 	msgStream, startChatErr := grpcClient.DoChatting(ctx)
 	if startChatErr != nil {
-		return fmt.Errorf("failed connect to chat: %w", startChatErr)
+		log.Println("failed connect to chat:", startChatErr)
+		return ErrConnectServer
+	}
+
+	if handshakeErr := waitServerForHandshake(msgStream); handshakeErr != nil {
+		log.Println("can't get handshake:", handshakeErr)
+		return ErrSeverRefusedConnection
 	}
 
 	user, createUserErr := c.createChatUser(c.username, msgStream, clientKeyPair)
 	if createUserErr != nil {
-		return fmt.Errorf("can't create chat user: %w", createUserErr)
+		log.Println("can't create chat user:", createUserErr)
+		return ErrClientside
 	}
-
-	log.Println(c.username, "connected to room", c.roomName)
 
 	defer func() {
 		if closeSendErr := msgStream.CloseSend(); closeSendErr != nil {
@@ -80,7 +93,12 @@ func (c *ChatClient) DoChatting() error {
 		}
 	}()
 
-	return c.readAndWriteMessagesFromStream(user)
+	if chattingErr := c.readAndWriteMessagesFromStream(user); chattingErr != nil {
+		log.Println("error during chatting:", chattingErr)
+		return ErrChatting
+	}
+
+	return nil
 }
 
 func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
@@ -108,8 +126,15 @@ func (c *ChatClient) prepareMetaForServer(pubKey *rsa.PublicKey) metadata.MD {
 	return metadata.New(map[string]string{"username": c.username, "room": c.roomName, "cipher_key": encodedPublicKey})
 }
 
+func waitServerForHandshake(msgStream chat.Chat_DoChattingClient) error {
+	_, handshakeErr := msgStream.Recv()
+
+	return handshakeErr
+}
+
 func (c *ChatClient) createChatUser(username string, msgStream chat.Chat_DoChattingClient,
 	privateKey *rsa.PrivateKey) (entity.User, error) {
+
 	md, getMdErr := msgStream.Header()
 	if getMdErr != nil {
 		return entity.User{}, fmt.Errorf("failed to get metadata: %w", getMdErr)
@@ -216,7 +241,11 @@ func (c *ChatClient) readMessages(user entity.User, errCh chan<- error) {
 		}
 
 		if fromUserID != user.ID {
-			fmt.Printf("%s: %s", msg.FromName, decryptedMessage)
+			if !strings.HasPrefix(msg.FromName, "room") {
+				fmt.Printf("%s: %s", msg.FromName, decryptedMessage)
+			} else {
+				log.Print(decryptedMessage)
+			}
 		} else {
 			if !strings.HasPrefix(msg.FromName, "room") {
 				fmt.Printf("%s (you): %s", msg.FromName, decryptedMessage)
