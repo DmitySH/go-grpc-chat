@@ -38,12 +38,10 @@ func main() {
 
 	listener, err := net.Listen("tcp",
 		fmt.Sprintf("%s:%d", serverCfg.host, serverCfg.port))
-
-	defer listener.Close()
-
 	if err != nil {
 		log.Fatal("can't listen:", err)
 	}
+	defer listener.Close()
 
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
