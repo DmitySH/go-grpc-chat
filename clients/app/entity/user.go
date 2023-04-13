@@ -2,7 +2,7 @@ package entity
 
 import (
 	"crypto/rsa"
-	"github.com/DmitySH/go-grpc-chat/api/chat"
+	"github.com/DmitySH/go-grpc-chat/pkg/api/chat"
 	"github.com/google/uuid"
 )
 

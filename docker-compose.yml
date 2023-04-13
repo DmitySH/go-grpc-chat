@@ -10,6 +10,20 @@ services:
     depends_on:
       - kafka-1
       - kafka-2
+      - db
+
+  db:
+    image: postgres:14.1
+    container_name: "chat-postgres"
+    environment:
+      POSTGRES_DB: "chat-stg"
+      POSTGRES_USER: "dmity"
+      POSTGRES_PASSWORD: "IJF@ydTiMGpy"
+      PGDATA: "/var/lib/postgresql/data/pgdata"
+    volumes:
+      - .:/var/lib/postgresql/data
+    ports:
+      - "5438:5432"
 
   zookeeper-1:
     container_name: "zk-1"

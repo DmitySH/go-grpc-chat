@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/DmitySH/go-grpc-chat/api/chat"
-	"github.com/DmitySH/go-grpc-chat/internal/chatroom"
-	"github.com/DmitySH/go-grpc-chat/pkg/config"
+	"github.com/DmitySH/go-grpc-chat/internal/entity"
+	"github.com/DmitySH/go-grpc-chat/pkg/api/chat"
 	"github.com/DmitySH/go-grpc-chat/pkg/cryptotransfer"
-	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -22,17 +20,27 @@ const cryptoBits = 2048
 
 var ErrUserDisconnected = errors.New("user disconnected")
 
-type ChatService struct {
-	chat.UnimplementedChatServer
-	rooms       map[string]*chatroom.Room
-	roomsMu     sync.Mutex
-	kafkaConfig config.KafkaConfig
+type ProducerFactory interface {
+	Create() Producer
 }
 
-func NewChatService(kafkaConfig config.KafkaConfig) *ChatService {
+type UserRepository interface {
+	CreateUser(ctx context.Context, user entity.User) error
+}
+
+type ChatService struct {
+	chat.UnimplementedChatServer
+	rooms           map[string]*Room
+	roomsMu         sync.Mutex
+	producerFactory ProducerFactory
+	userRepo        UserRepository
+}
+
+func NewChatService(producerFactory ProducerFactory, userRepo UserRepository) *ChatService {
 	service := &ChatService{
-		rooms:       make(map[string]*chatroom.Room),
-		kafkaConfig: kafkaConfig,
+		rooms:           make(map[string]*Room),
+		producerFactory: producerFactory,
+		userRepo:        userRepo,
 	}
 
 	return service
@@ -115,7 +123,7 @@ func createChatUser(md metadata.MD, msgStream chat.Chat_DoChattingServer) (entit
 	return user, nil
 }
 
-func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*chatroom.Room, error) {
+func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*Room, error) {
 	s.roomsMu.Lock()
 	defer s.roomsMu.Unlock()
 
@@ -128,9 +136,9 @@ func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*chatroo
 	return room, nil
 }
 
-func (s *ChatService) getOrCreateRoom(roomName string) *chatroom.Room {
+func (s *ChatService) getOrCreateRoom(roomName string) *Room {
 	if _, ok := s.rooms[roomName]; !ok {
-		s.rooms[roomName] = chatroom.NewRoom(roomName, s.kafkaConfig)
+		s.rooms[roomName] = NewRoom(roomName, s.producerFactory.Create())
 		s.rooms[roomName].StartDeliveringMessages()
 
 		log.Println("room", roomName, "created")
@@ -149,7 +157,7 @@ func prepareMetaForClient(user entity.User) metadata.MD {
 	})
 }
 
-func (s *ChatService) disconnectUser(user entity.User, room *chatroom.Room) {
+func (s *ChatService) disconnectUser(user entity.User, room *Room) {
 	room.DeleteUser(user.ID)
 	log.Println("user", user.Name, "disconnected")
 
@@ -175,7 +183,7 @@ func sendHandshake(msgStream chat.Chat_DoChattingServer) error {
 	return sendErr
 }
 
-func (s *ChatService) deleteRoomIfEmpty(room *chatroom.Room) bool {
+func (s *ChatService) deleteRoomIfEmpty(room *Room) bool {
 	s.roomsMu.Lock()
 	defer s.roomsMu.Unlock()
 
@@ -187,7 +195,7 @@ func (s *ChatService) deleteRoomIfEmpty(room *chatroom.Room) bool {
 	return false
 }
 
-func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) error {
+func (s *ChatService) handleInputMessage(user entity.User, room *Room) error {
 	in, receiveMessageErr := user.MessageStream.Recv()
 
 	if receiveMessageErr == io.EOF {
@@ -209,7 +217,7 @@ func (s *ChatService) handleInputMessage(user entity.User, room *chatroom.Room) 
 	return nil
 }
 
-func decryptAndSendMessage(room *chatroom.Room, encryptedMessage string, user entity.User) error {
+func decryptAndSendMessage(room *Room, encryptedMessage string, user entity.User) error {
 	decryptedMessage, decryptErr := cryptotransfer.DecryptRSAMessage(encryptedMessage, user.ServerPrivateKey)
 	if decryptErr != nil {
 		return fmt.Errorf("can't decrypt message: %w", decryptErr)

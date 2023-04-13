@@ -1,17 +1,25 @@
-package chatroom
+package services
 
 import (
+	"context"
 	"fmt"
-	"github.com/DmitySH/go-grpc-chat/api/chat"
-	"github.com/DmitySH/go-grpc-chat/internal/producer"
-	"github.com/DmitySH/go-grpc-chat/pkg/config"
+	"github.com/DmitySH/go-grpc-chat/internal/entity"
+	"github.com/DmitySH/go-grpc-chat/pkg/api/chat"
 	"github.com/DmitySH/go-grpc-chat/pkg/cryptotransfer"
-	"github.com/DmitySH/go-grpc-chat/pkg/entity"
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
 	"log"
 	"sync"
+	"time"
 )
+
+const (
+	producerTimeout = time.Second * 5
+)
+
+type Producer interface {
+	Close() error
+	SendMessages(ctx context.Context, messages []entity.BrokerLoggingMessage) error
+}
 
 type Room struct {
 	Name         string
@@ -19,19 +27,15 @@ type Room struct {
 	users        map[uuid.UUID]entity.User
 	messageQueue chan entity.Message
 	closed       bool
-	kafkaWriter  *kafka.Writer
+	producer     Producer
 }
 
-func NewRoom(name string, kafkaConfig config.KafkaConfig) *Room {
+func NewRoom(name string, producer Producer) *Room {
 	return &Room{
 		Name:         name,
 		users:        make(map[uuid.UUID]entity.User),
 		messageQueue: make(chan entity.Message),
-		kafkaWriter: &kafka.Writer{
-			Addr:                   kafkaConfig.Addr,
-			Topic:                  kafkaConfig.Topic,
-			AllowAutoTopicCreation: kafkaConfig.AllowAutoTopicCreation,
-		},
+		producer:     producer,
 	}
 }
 
@@ -62,7 +66,7 @@ func (r *Room) StartDeliveringMessages() {
 		for msg := range r.messageQueue {
 			r.sendMessageToAllUsers(msg)
 		}
-		if err := r.kafkaWriter.Close(); err != nil {
+		if err := r.producer.Close(); err != nil {
 			log.Println("can't close kafka writer in room", r.Name)
 		}
 	}()
@@ -86,21 +90,24 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 	r.usersMu.RLock()
 	defer r.usersMu.RUnlock()
 
-	kafkaMessages := make([]kafka.Message, 0, len(r.users))
+	kafkaMessages := make([]entity.BrokerLoggingMessage, 0, len(r.users))
 
 	for _, user := range r.users {
 		err := encryptAndSendMessage(msg, user)
 		if err != nil {
 			log.Printf("can't send message to %s: %v", user.Name, err)
 		} else {
-			kafkaMessages = append(kafkaMessages, newKafkaMessage(msg, user))
+			kafkaMessages = append(kafkaMessages, newBrokerLoggingMessage(msg, user))
 		}
 	}
 
 	go func() {
-		err := producer.AttemptSendMessages(r.kafkaWriter, kafkaMessages)
+		ctx, cancel := context.WithTimeout(context.Background(), producerTimeout)
+		defer cancel()
+
+		err := r.producer.SendMessages(ctx, kafkaMessages)
 		if err != nil {
-			log.Println(err)
+			log.Println("can't send messages to broker", err)
 		}
 	}()
 }
@@ -118,4 +125,16 @@ func encryptAndSendMessage(msg entity.Message, user entity.User) error {
 	})
 
 	return sendErr
+}
+
+func newBrokerLoggingMessage(msg entity.Message, user entity.User) entity.BrokerLoggingMessage {
+	messageUUID := uuid.New()
+
+	return entity.BrokerLoggingMessage{
+		MessageUUID:    messageUUID,
+		Timestamp:      time.Now(),
+		MessageContent: msg.Content,
+		FromUserUUID:   msg.FromUUID,
+		ToUserUUID:     user.ID,
+	}
 }
