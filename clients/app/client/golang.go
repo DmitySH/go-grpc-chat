@@ -50,8 +50,6 @@ func NewChatClient(config Config, username, room string) *ChatClient {
 	}
 }
 
-// TODO: разделить уровни и файлы логов.
-
 func (c *ChatClient) DoChatting() error {
 	clientKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
 	if generateKeyErr != nil {
