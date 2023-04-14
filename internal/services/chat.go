@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/internal/entity"
@@ -24,33 +23,24 @@ type ProducerFactory interface {
 	Create() Producer
 }
 
-type UserRepository interface {
-	CreateUser(ctx context.Context, user entity.User) error
-}
-
 type ChatService struct {
 	chat.UnimplementedChatServer
 	rooms           map[string]*Room
 	roomsMu         sync.Mutex
 	producerFactory ProducerFactory
-	userRepo        UserRepository
 }
 
-func NewChatService(producerFactory ProducerFactory, userRepo UserRepository) *ChatService {
+func NewChatService(producerFactory ProducerFactory) *ChatService {
 	service := &ChatService{
 		rooms:           make(map[string]*Room),
 		producerFactory: producerFactory,
-		userRepo:        userRepo,
 	}
 
 	return service
 }
 
 func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
-	md, mdErr := checkMetadata(msgStream.Context())
-	if mdErr != nil {
-		return mdErr
-	}
+	md, _ := metadata.FromIncomingContext(msgStream.Context())
 
 	roomName := md.Get("room")[0]
 
@@ -231,22 +221,4 @@ func decryptAndSendMessage(room *Room, encryptedMessage string, user entity.User
 	log.Printf("room %s: %s said %s", room.Name, user.Name, decryptedMessage)
 
 	return nil
-}
-
-func checkMetadata(ctx context.Context) (metadata.MD, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.PermissionDenied, "no metadata")
-	}
-	if len(md.Get("username")) == 0 {
-		return nil, status.Error(codes.PermissionDenied, "no username in metadata")
-	}
-	if len(md.Get("room")) == 0 {
-		return nil, status.Error(codes.PermissionDenied, "no room in metadata")
-	}
-	if len(md.Get("cipher_key")) == 0 {
-		return nil, status.Error(codes.PermissionDenied, "no cipher key in metadata")
-	}
-
-	return md, nil
 }

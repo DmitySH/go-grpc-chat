@@ -3,6 +3,7 @@ package chat
 import (
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/internal/factory"
+	"github.com/DmitySH/go-grpc-chat/internal/middleware"
 	"github.com/DmitySH/go-grpc-chat/internal/repository"
 	"github.com/DmitySH/go-grpc-chat/internal/services"
 	"github.com/DmitySH/go-grpc-chat/pkg/api/chat"
@@ -46,10 +47,13 @@ func Run() {
 	}
 
 	userRepo := repository.NewUserRepository(db)
+	_ = userRepo
 
-	chatService := services.NewChatService(producerFactory, userRepo)
+	chatService := services.NewChatService(producerFactory)
 
-	var opts []grpc.ServerOption
+	var opts = []grpc.ServerOption{
+		grpc.StreamInterceptor(middleware.AuthInterceptor),
+	}
 	grpcServer := grpc.NewServer(opts...)
 
 	chat.RegisterChatServer(grpcServer, chatService)
