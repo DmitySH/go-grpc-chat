@@ -24,7 +24,7 @@ type Producer interface {
 type Room struct {
 	Name         string
 	usersMu      sync.RWMutex
-	users        map[uuid.UUID]entity.User
+	users        map[uuid.UUID]entity.ChatUser
 	messageQueue chan entity.Message
 	closed       bool
 	producer     Producer
@@ -33,13 +33,13 @@ type Room struct {
 func NewRoom(name string, producer Producer) *Room {
 	return &Room{
 		Name:         name,
-		users:        make(map[uuid.UUID]entity.User),
+		users:        make(map[uuid.UUID]entity.ChatUser),
 		messageQueue: make(chan entity.Message),
 		producer:     producer,
 	}
 }
 
-func (r *Room) AddUser(user entity.User) error {
+func (r *Room) AddUser(user entity.ChatUser) error {
 	r.usersMu.Lock()
 	defer r.usersMu.Unlock()
 	if r.closed {
@@ -52,8 +52,8 @@ func (r *Room) AddUser(user entity.User) error {
 }
 
 func (r *Room) DeleteUser(userID uuid.UUID) {
-	r.usersMu.RLock()
-	defer r.usersMu.RUnlock()
+	r.usersMu.Lock()
+	defer r.usersMu.Unlock()
 	delete(r.users, userID)
 }
 
@@ -92,12 +92,16 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 
 	kafkaMessages := make([]entity.BrokerLoggingMessage, 0, len(r.users))
 
+	r.handleMessageByType(msg)
+
 	for _, user := range r.users {
-		err := encryptAndSendMessage(msg, user)
-		if err != nil {
-			log.Printf("can't send message to %s: %v", user.Name, err)
-		} else {
-			kafkaMessages = append(kafkaMessages, newBrokerLoggingMessage(msg, user))
+		if *user.ReceivingMessages {
+			err := encryptAndSendMessage(msg, user)
+			if err != nil {
+				log.Printf("can't send message to %s: %v", user.Name, err)
+			} else {
+				kafkaMessages = append(kafkaMessages, newBrokerLoggingMessage(msg, user.User))
+			}
 		}
 	}
 
@@ -112,7 +116,14 @@ func (r *Room) sendMessageToAllUsers(msg entity.Message) {
 	}()
 }
 
-func encryptAndSendMessage(msg entity.Message, user entity.User) error {
+func (r *Room) handleMessageByType(msg entity.Message) {
+	switch msg.Type {
+	case entity.UserConnected:
+		*r.users[msg.FromUUID].ReceivingMessages = true
+	}
+}
+
+func encryptAndSendMessage(msg entity.Message, user entity.ChatUser) error {
 	cipherMessage, encryptErr := cryptotransfer.EncryptRSAMessage(msg.Content+"\n", user.ClientPublicKey)
 	if encryptErr != nil {
 		return fmt.Errorf("can't encrypt message: %w", encryptErr)

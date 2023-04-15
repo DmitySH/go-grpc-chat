@@ -6,7 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/DmitySH/go-grpc-chat/clients/app/entity"
-	chat2 "github.com/DmitySH/go-grpc-chat/pkg/api/chat"
+	"github.com/DmitySH/go-grpc-chat/clients/app/middleware"
+	"github.com/DmitySH/go-grpc-chat/pkg/api/chat"
 	"github.com/DmitySH/go-grpc-chat/pkg/cryptotransfer"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -66,7 +67,7 @@ func (c *ChatClient) DoChatting() error {
 
 	ctx := metadata.NewOutgoingContext(context.Background(), c.prepareMetaForServer(&clientKeyPair.PublicKey))
 
-	grpcClient := chat2.NewChatClient(conn)
+	grpcClient := chat.NewChatClient(conn)
 
 	msgStream, startChatErr := grpcClient.DoChatting(ctx)
 	if startChatErr != nil {
@@ -102,6 +103,7 @@ func (c *ChatClient) DoChatting() error {
 func (c *ChatClient) createGrpcConn() (*grpc.ClientConn, error) {
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStreamInterceptor(middleware.AuthInterceptor),
 	}
 
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
@@ -124,13 +126,13 @@ func (c *ChatClient) prepareMetaForServer(pubKey *rsa.PublicKey) metadata.MD {
 	return metadata.New(map[string]string{"username": c.username, "room": c.roomName, "cipher_key": encodedPublicKey})
 }
 
-func waitServerForHandshake(msgStream chat2.Chat_DoChattingClient) error {
+func waitServerForHandshake(msgStream chat.Chat_DoChattingClient) error {
 	_, handshakeErr := msgStream.Recv()
 
 	return handshakeErr
 }
 
-func (c *ChatClient) createChatUser(username string, msgStream chat2.Chat_DoChattingClient,
+func (c *ChatClient) createChatUser(username string, msgStream chat.Chat_DoChattingClient,
 	privateKey *rsa.PrivateKey) (entity.User, error) {
 
 	md, getMdErr := msgStream.Header()
@@ -238,15 +240,13 @@ func (c *ChatClient) readMessages(user entity.User, errCh chan<- error) {
 			return
 		}
 
-		if fromUserID != user.ID {
-			if !strings.HasPrefix(msg.FromName, "room") {
-				fmt.Printf("%s: %s", msg.FromName, decryptedMessage)
-			} else {
-				log.Print(decryptedMessage)
-			}
+		if strings.HasPrefix(msg.FromName, "room") {
+			log.Printf("%s: %s", msg.FromName, decryptedMessage)
 		} else {
-			if !strings.HasPrefix(msg.FromName, "room") {
+			if fromUserID == user.ID {
 				fmt.Printf("%s (you): %s", msg.FromName, decryptedMessage)
+			} else {
+				fmt.Printf("%s: %s", msg.FromName, decryptedMessage)
 			}
 		}
 	}
@@ -275,7 +275,7 @@ func (c *ChatClient) writeMessages(user entity.User, errCh chan<- error) {
 			return
 		}
 
-		req := &chat2.MessageRequest{Content: cipherMessage}
+		req := &chat.MessageRequest{Content: cipherMessage}
 		if err := user.MessageStream.Send(req); err != nil {
 			errCh <- fmt.Errorf("failed to send message: %w", err)
 			return

@@ -55,65 +55,56 @@ func (s *ChatService) DoChatting(msgStream chat.Chat_DoChattingServer) error {
 		log.Printf("can't add user to room %s: %v\n", room.Name, addUserErr)
 		return status.Error(codes.Internal, "can't add user to room:"+addUserErr.Error())
 	}
+	defer s.disconnectUser(user.User, room)
 
 	if sendMdErr := user.MessageStream.SendHeader(prepareMetaForClient(user)); sendMdErr != nil {
 		log.Printf("can't send header metadata for user %s: %v\n", user.Name, sendMdErr)
 		return status.Error(codes.Internal, "can't send header metadata:"+sendMdErr.Error())
 	}
 
-	log.Println("user", user.Name, "connected to room", roomName)
-	room.PushMessage(entity.Message{
-		Content:  fmt.Sprintf("user %s connected", user.Name),
-		FromName: fmt.Sprintf("room %s", roomName),
-		FromUUID: uuid.Nil,
-	})
-	defer s.disconnectUser(user, room)
-
 	if sendHandshakeErr := sendHandshake(user.MessageStream); sendHandshakeErr != nil {
 		log.Println("can't send handshake to client:", sendHandshakeErr)
 		return status.Error(codes.Internal, "can't send handshake to client:"+sendHandshakeErr.Error())
 	}
 
-	for {
-		err := s.handleInputMessage(user, room)
-		if errors.Is(err, ErrUserDisconnected) {
-			return nil
-		}
+	log.Println("user", user.Name, "connected to room", roomName)
+	room.PushMessage(entity.Message{
+		Content:  fmt.Sprintf("user %s connected", user.Name),
+		FromName: fmt.Sprintf("room %s", roomName),
+		FromUUID: user.ID,
+		Type:     entity.UserConnected,
+	})
 
-		if err != nil {
-			log.Println("can't handle input message:", err)
-			return status.Error(codes.Internal, "can't handle input message:"+err.Error())
-		}
-	}
+	return s.handleInputMessages(user, room)
 }
 
-func createChatUser(md metadata.MD, msgStream chat.Chat_DoChattingServer) (entity.User, error) {
+func createChatUser(md metadata.MD, msgStream chat.Chat_DoChattingServer) (entity.ChatUser, error) {
 	username := md.Get("username")[0]
 	encodedClientPublicKey := md.Get("cipher_key")[0]
 
 	serverKeyPair, generateKeyErr := cryptotransfer.GenerateKeyPair(cryptoBits)
 	if generateKeyErr != nil {
 		log.Println("can't generate key pair:", generateKeyErr)
-		return entity.User{}, fmt.Errorf("can't generate key pair: %w", generateKeyErr)
+		return entity.ChatUser{}, fmt.Errorf("can't generate key pair: %w", generateKeyErr)
 	}
 
 	clientPublicKey, decodeKeyErr := cryptotransfer.DecodePublicKeyFromBase64(encodedClientPublicKey)
 	if decodeKeyErr != nil {
-		return entity.User{}, fmt.Errorf("can't decode client's key from base64: %w", decodeKeyErr)
+		return entity.ChatUser{}, fmt.Errorf("can't decode client's key from base64: %w", decodeKeyErr)
 	}
 
-	user := entity.User{
-		ID:               uuid.New(),
-		Name:             username,
-		MessageStream:    msgStream,
-		ServerPrivateKey: serverKeyPair,
-		ClientPublicKey:  clientPublicKey,
+	user := entity.ChatUser{
+		User:              entity.User{ID: uuid.New(), Name: username},
+		MessageStream:     msgStream,
+		ServerPrivateKey:  serverKeyPair,
+		ClientPublicKey:   clientPublicKey,
+		ReceivingMessages: new(bool),
 	}
 
 	return user, nil
 }
 
-func (s *ChatService) addUserToRoom(roomName string, user entity.User) (*Room, error) {
+func (s *ChatService) addUserToRoom(roomName string, user entity.ChatUser) (*Room, error) {
 	s.roomsMu.Lock()
 	defer s.roomsMu.Unlock()
 
@@ -138,7 +129,7 @@ func (s *ChatService) getOrCreateRoom(roomName string) *Room {
 	return room
 }
 
-func prepareMetaForClient(user entity.User) metadata.MD {
+func prepareMetaForClient(user entity.ChatUser) metadata.MD {
 	encodedPublicKey := cryptotransfer.EncodePublicKeyToBase64(&user.ServerPrivateKey.PublicKey)
 
 	return metadata.New(map[string]string{
@@ -159,7 +150,8 @@ func (s *ChatService) disconnectUser(user entity.User, room *Room) {
 	room.PushMessage(entity.Message{
 		Content:  fmt.Sprintf("user %s disconnected", user.Name),
 		FromName: fmt.Sprintf("room %s", room.Name),
-		FromUUID: uuid.Nil,
+		FromUUID: user.ID,
+		Type:     entity.UserDisconnected,
 	})
 }
 
@@ -185,7 +177,21 @@ func (s *ChatService) deleteRoomIfEmpty(room *Room) bool {
 	return false
 }
 
-func (s *ChatService) handleInputMessage(user entity.User, room *Room) error {
+func (s *ChatService) handleInputMessages(user entity.ChatUser, room *Room) error {
+	for {
+		err := s.handleInputMessage(user, room)
+		if errors.Is(err, ErrUserDisconnected) {
+			return nil
+		}
+
+		if err != nil {
+			log.Println("can't handle input message:", err)
+			return status.Error(codes.Internal, "can't handle input message:"+err.Error())
+		}
+	}
+}
+
+func (s *ChatService) handleInputMessage(user entity.ChatUser, room *Room) error {
 	in, receiveMessageErr := user.MessageStream.Recv()
 
 	if receiveMessageErr == io.EOF {
@@ -207,7 +213,7 @@ func (s *ChatService) handleInputMessage(user entity.User, room *Room) error {
 	return nil
 }
 
-func decryptAndSendMessage(room *Room, encryptedMessage string, user entity.User) error {
+func decryptAndSendMessage(room *Room, encryptedMessage string, user entity.ChatUser) error {
 	decryptedMessage, decryptErr := cryptotransfer.DecryptRSAMessage(encryptedMessage, user.ServerPrivateKey)
 	if decryptErr != nil {
 		return fmt.Errorf("can't decrypt message: %w", decryptErr)
@@ -217,6 +223,7 @@ func decryptAndSendMessage(room *Room, encryptedMessage string, user entity.User
 		Content:  decryptedMessage,
 		FromName: user.Name,
 		FromUUID: user.ID,
+		Type:     entity.UserMessage,
 	})
 	log.Printf("room %s: %s said %s", room.Name, user.Name, decryptedMessage)
 
